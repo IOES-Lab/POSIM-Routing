@@ -24,6 +24,7 @@ STANDOFF_M = 250.
 MAXIMUM_STANDOFF_M = 800.
 MINIMUM_DEPTH_M = 2.
 REGIONAL_BUFFER_M = 40.
+WAYPOINT_FORMAT = "checked-segment-ends-v1"
 
 
 def sphere(coordinates):
@@ -301,5 +302,6 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
                     onward_exit=list(inverse.transform(*xy(goal)[:2])),
                     onward_exit_progress_m=float(progress[goal]),
                     onward_verified=True,
+                    waypoint_format=WAYPOINT_FORMAT,
                     scope="numeric terrain coastal preference; native corridors checked separately")
     return None

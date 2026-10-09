@@ -216,6 +216,23 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('continuation',sample['regional_navigation'])
         await navigator.close()
 
+    async def test_saved_grid_lookahead_renews_without_discarding_its_checked_target(self):
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        class Near:
+            def nearest(self,position):return 1000.,geo(0,0)
+        key=[0,0,1];point=geo(800,9000);position=geo(800,0)
+        sample=dict(lap=0,leg=0,waypoint=1,position=position,status='sailing',native={},
+            regional_navigation=dict(points=[point],index=0,mode='coastal',route_key=key,
+                policy=REGIONAL_POLICY,probe_position=geo(800,-5000),onward_verified=True,
+                onward_points=[geo(6500,9000)],job='checked'))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near()
+        self.assertEqual(navigator.update(sample,geo(6500,9000)),point)
+        self.assertIsNotNone(navigator.task)
+        self.assertEqual(sample['regional_navigation']['job'],'checked')
+        self.assertEqual(sample['position'],position)
+        self.assertEqual(sample['status'],'sailing')
+        await navigator.close()
+
     async def test_recorded_shape_handoff_preserves_checked_coast(self):
         async def rpc(*args,**kwargs):await asyncio.Event().wait()
         class Near:
