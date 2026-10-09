@@ -22,7 +22,7 @@ from shapely.ops import transform
 from pyproj import CRS, Geod, Transformer
 
 GEO = Geod(ellps='WGS84')
-POLICY = 'osm-port-connectors-v1'
+POLICY = 'osm-port-connectors-v2'
 SOURCE = 'https://osmdata.openstreetmap.de/download/land-polygons.html'
 
 
@@ -78,7 +78,7 @@ class CoastConnector:
         low = np.minimum(start, end)-15000.
         high = np.maximum(start, end)+15000.
         nx, ny = np.ceil((high-low)/step).astype(int)+1
-        if nx*ny > 500000:
+        if nx*ny > 1000000:
             raise RuntimeError('connection_grid_limit')
         xx, yy = np.meshgrid(low[0]+np.arange(nx)*step, low[1]+np.arange(ny)*step)
         # Enlarging blocked nodes encloses every connecting grid edge.
@@ -148,7 +148,7 @@ def shorten(points, connector, protected=(), minimum_index=0):
         if any(point in protected for point in points[index+1:]):
             continue
         distance = GEO.inv(*points[index], *points[-1])[2]
-        if not 1000. < distance < 250000.:
+        if not 1000. < distance < 500000.:
             continue
         # The direct distance bounds the best possible connector.
         if length(points[:index+1])+distance >= length(best)-1000.:

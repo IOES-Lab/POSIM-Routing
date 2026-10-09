@@ -63,6 +63,16 @@ Choose start and goal inside confirmed water. The planner rejects unknown covera
 
 `port_approach.corridor(tiles, spec, start, target)` compares feasible entries to the arrival region. `connections.CoastConnector` shortens graph-to-port connections using OSM land polygons; it checks coastline margins, not bathymetry.
 
+The connector considers earlier offshore waypoints to avoid overshooting a port.
+It retains required passage points and any preserved route prefix. A failed
+search retains the supplied route. Numeric terrain checks remain necessary.
+
+- Candidate distance to the port: 1–500 km
+- Coast search grid limit: 1,000,000 nodes
+- Default grid spacing: 250 m
+- Default land margin: 80 m
+- Default search timeout: 10 seconds
+
 ## Structure
 
 | Path | Contents |
