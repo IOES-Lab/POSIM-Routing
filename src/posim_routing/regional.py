@@ -254,6 +254,21 @@ class RegionalNavigator:
         value.update(route_key=key,job=state['native']['job'],source='resident collision terrain',
                      policy=REGIONAL_POLICY,probe_position=current,mapped_land_checked=guard is not None)
         return value
+    async def terrain_region(self, centre, extent):
+        """Try a smaller verified region when the baseline provider is offline."""
+        for width in (extent, 6000) if extent > 6000 else (extent,):
+            job=await self.rpc('/terrain/jobs',dict(latitude=centre[1],longitude=centre[0],
+                width_m=width,height_m=width,samples=257,source_policy='auto'),20)
+            end=time.monotonic()+620
+            while job['status'] in ('queued','running') and time.monotonic()<end:
+                await asyncio.sleep(2);job=await self.rpc('/terrain/jobs/'+job['id'])
+            if job['status']=='ready':return job
+            if width==6000 or job['status']!='failed':break
+            try:
+                sources=await self.rpc('/terrain/jobs/'+job['id']+'/files/source-providers.json')
+            except Exception:break
+            if (sources.get('baseline_status') or {}).get('status')!='unavailable':break
+        raise RuntimeError('regional_terrain_unavailable')
     async def prepare(self,state,target,key,nearest=None,needed=True):
         from posim_terrain.canal_override import in_region
         canal=in_region(state['position'])
@@ -276,11 +291,7 @@ class RegionalNavigator:
             centre=list(GEO.fwd(*pos,heading,min(6000.,nearest[0]-6000.))[:2])
         extent=4000 if canal else 20000
         if self.before_prepare is not None:await self.before_prepare()
-        job=await self.rpc('/terrain/jobs',dict(latitude=centre[1],longitude=centre[0],width_m=extent,height_m=extent,samples=257,source_policy='auto'),20)
-        end=time.monotonic()+620
-        while job['status'] in ('queued','running') and time.monotonic()<end:
-            await asyncio.sleep(2);job=await self.rpc('/terrain/jobs/'+job['id'])
-        if job['status']!='ready':raise RuntimeError('regional_terrain_unavailable')
+        job=await self.terrain_region(centre,extent)
         grid=await self.rpc('/terrain/jobs/'+job['id']+'/files/terrain.json',timeout=20)
         guard=None
         if not canal:

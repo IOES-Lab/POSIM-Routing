@@ -117,6 +117,13 @@ checked replacement is ready. Physics and sensor sampling continue during the
 wait. Failed or empty optional renewal cannot replace a checked coastal route
 with an offshore goal.
 
+When the baseline terrain provider is unavailable, regional planning tries a
+smaller region. It uses verified source data and the same depth and land checks.
+
+- Normal region: 20 km × 20 km
+- Source outage retry: 6 km × 6 km
+- Missing data in both regions: hold thrust and retry
+
 ## Tests and terms
 
 ```sh
