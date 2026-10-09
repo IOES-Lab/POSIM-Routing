@@ -48,7 +48,7 @@ def shortest_arrival(planner, field, origin, candidates):
     return best, best_floor
 
 
-def corridor(tiles, spec, start, target):
+def corridor(tiles, spec, start, target, guard=None):
     from posim_terrain.terrain import projection
     from .navigation import TerrainField, DetourPlanner
     from .planning import CachedTerrain
@@ -56,6 +56,9 @@ def corridor(tiles, spec, start, target):
     origin = [*forward.transform(*start), 0.]
     centre = [*forward.transform(*target), 0.]
     field = CachedTerrain(TerrainField.tiles(tiles))
+    if guard is not None:
+        from .land import LandExcludedField
+        field = LandExcludedField(field, guard)
     planner = DetourPlanner(field, origin, True, step=8., timeout=20.,
                            maximum_radius=6000., maximum_length=16000.)
     # Preserve the catalog's 3 m / 25 m port endpoint screening. En route,

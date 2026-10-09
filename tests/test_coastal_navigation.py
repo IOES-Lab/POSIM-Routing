@@ -155,6 +155,28 @@ class CoastalPlanning(unittest.TestCase):
 
 
 class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from unittest.mock import patch
+        import shapely
+        from posim_routing.land import LandGuard
+        # These RPC fixtures carry synthetic numeric terrain, not map data.
+        fixture=LandGuard(shapely.GeometryCollection(),shapely.box(-100000,-100000,100000,100000))
+        mock=patch('posim_routing.land.guard_from_spec',return_value=fixture)
+        mock.start();self.addCleanup(mock.stop)
+
+    async def test_exhausted_mapped_detour_cannot_fall_back_across_the_peninsula(self):
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        key=[0,0,1];end=geo(2000,0);target=geo(-8000,-8000)
+        sample=dict(lap=0,leg=0,waypoint=1,position=end,status='sailing',native={},
+            regional_navigation=dict(route_key=key,points=[end],index=1,mode='detour',
+                mapped_guidance=dict(course_target=target),policy=REGIONAL_POLICY,
+                probe_position=geo(0,0),job='checked'))
+        navigator=RegionalNavigator(rpc);navigator.key=key
+        self.assertEqual(navigator.update(sample,target),end)
+        self.assertIsNotNone(sample.get('regional_waiting'))
+        self.assertIsNotNone(navigator.task)
+        await navigator.close()
+
     async def test_coastal_lookahead_is_prefetched_before_its_end(self):
         async def rpc(*args,**kwargs):
             await asyncio.Event().wait()
@@ -314,7 +336,8 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         target = geo(6500, 9000)
         point = geo(800, 2000)
         with patch('posim_routing.coastal.coastal_corridor', return_value=dict(points=[point], index=0, mode='coastal')):
-            self.assertEqual(navigator.update(state, target), target)
+            self.assertEqual(navigator.update(state, target), state['position'])
+            self.assertEqual(state['regional_waiting']['reason'],'land_checked_coastal_route_pending')
             self.assertEqual(state['status'], 'sailing')
             await navigator.task
             self.assertEqual(navigator.update(state, target), point)
@@ -351,7 +374,7 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
                 return terrain
             return dict(id='terrain-fixture', status='ready', spec=SPEC,
                         manifest=dict(source='synthetic fixture'))
-        def plan(terrain, spec, start, target):
+        def plan(terrain, spec, start, target, guard=None):
             starts.append(start)
             return dict(points=[geo(800, 2000)], index=0, mode='coastal')
         navigator = RegionalNavigator(rpc)
