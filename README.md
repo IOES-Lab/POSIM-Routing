@@ -83,6 +83,8 @@ shortened route preserves its exit and coastline preference.
 
 `port_approach.corridor(tiles, spec, start, target)` compares feasible entries to the arrival region. `connections.CoastConnector` shortens graph-to-port connections using OSM land polygons; it checks coastline margins, not bathymetry.
 
+If the arrival area is outside resident terrain, the navigator advances along a verified regional approach. It retries the complete arrival corridor after 500 m of measured progress. Unknown depth or a blocked arrival area keeps the vessel waiting.
+
 The connector considers earlier offshore waypoints to avoid overshooting a port.
 It retains required passage points and any preserved route prefix. A failed
 search retains the supplied route. Numeric terrain checks remain necessary.

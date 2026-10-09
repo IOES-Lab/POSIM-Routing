@@ -8,6 +8,10 @@ ARRIVAL_RADIUS_M = 300.
 APPROACH_DISTANCE_M = 5000.
 
 
+class ArrivalOutsideResidentTerrain(RuntimeError):
+    """The vessel must advance before its arrival area is resident."""
+
+
 @lru_cache(maxsize=8)
 def forward_frame(spec):
     from posim_terrain.terrain import projection
@@ -28,12 +32,18 @@ def bend_lookahead(native, regional, seed_spec):
 def shortest_arrival(planner, field, origin, candidates):
     """Compare feasible region entries within one shared planning budget."""
     best, best_floor, best_length = None, None, math.inf
-    for goal in sorted(candidates, key=lambda point: math.dist(origin[:2], point[:2])):
+    floors = [(goal, field.maximum(*goal[:2], 25.)) for goal in candidates]
+    coverage = field
+    while hasattr(coverage, 'field'):
+        coverage = coverage.field
+    if all(floor is None for _, floor in floors) and all(
+            coverage.maximum(*goal[:2], 25.) is None for goal in candidates):
+        raise ArrivalOutsideResidentTerrain('port_arrival_region_outside_resident_terrain')
+    for goal, floor in sorted(floors, key=lambda item: math.dist(origin[:2], item[0][:2])):
         if math.dist(origin[:2], goal[:2]) >= best_length-.01:
             break
         if time.monotonic() > planner.deadline:
             break
-        floor = field.maximum(*goal[:2], 25.)
         if floor is None or floor > -3.:
             continue
         try:

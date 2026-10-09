@@ -159,7 +159,9 @@ class RegionalNavigator:
         guide_exhausted=(plan.get('route_key')==key and plan.get('mapped_guidance')
                          and plan.get('points') and plan['index']>=len(plan['points']))
         needed=needed or bool(guide_exhausted)
-        prefer_port=terminal and plan.get('mode')!='port_approach'
+        approach_runway=(plan.get('mode')=='port_approach_lookahead' and point is not None
+                         and distance(state['position'],plan['probe_position'])<500.)
+        prefer_port=terminal and plan.get('mode')!='port_approach' and not approach_runway
         if terminal and point is not None and not prefer_port and not (self.task and self.task.done()):return point
         # Prepare the next coastal lookahead while the current checked plan
         # still has runway. Otherwise its end briefly falls back to an offshore
@@ -234,7 +236,7 @@ class RegionalNavigator:
         # A port's narrow entrance is resolved by the same triangles already
         # in Gazebo. A 20 km / 257 grid can close that entrance and create a
         # cyclic offshore frontier. No scenery preference replaces this goal.
-        from .port_approach import corridor
+        from .port_approach import corridor, ArrivalOutsideResidentTerrain
         native=await self.rpc('/promotional/state')
         stream=await self.rpc('/stream/state')
         epoch=(native.get('origin') or {}).get('epoch',0)
@@ -247,7 +249,15 @@ class RegionalNavigator:
         from .land import guard_from_spec
         from posim_terrain.canal_override import in_region
         guard=None if in_region(current) else await asyncio.to_thread(guard_from_spec,spec,64000.)
-        value=await asyncio.to_thread(corridor,tiles,spec,current,target,guard=guard)
+        try:
+            value=await asyncio.to_thread(corridor,tiles,spec,current,target,guard=guard)
+        except ArrivalOutsideResidentTerrain:
+            # Robot-centred streaming cannot load a distant entrance while the
+            # ship is stationary. Advance on verified regional water, with the
+            # native resident corridor rechecking every movement command.
+            value=await self.prepare(state,target,key,needed=True,extent=6000)
+            value.update(mode='port_approach_lookahead',arrival_centre=list(target))
+            return value
         latest=await self.rpc('/promotional/state')
         if latest['session_nonce']!=native['session_nonce'] or (latest.get('origin') or {}).get('epoch',0)!=epoch:
             raise RuntimeError('port_frame_changed')
@@ -269,7 +279,7 @@ class RegionalNavigator:
             except Exception:break
             if (sources.get('baseline_status') or {}).get('status')!='unavailable':break
         raise RuntimeError('regional_terrain_unavailable')
-    async def prepare(self,state,target,key,nearest=None,needed=True):
+    async def prepare(self,state,target,key,nearest=None,needed=True,extent=None):
         from posim_terrain.canal_override import in_region
         canal=in_region(state['position'])
         if self.coastal and not canal and nearest is None and self.index_task is not None:
@@ -289,7 +299,7 @@ class RegionalNavigator:
             # distant coast. The 1:10M discovery line never supplies depth.
             heading,_,_=GEO.inv(*pos,*nearest[1])
             centre=list(GEO.fwd(*pos,heading,min(6000.,nearest[0]-6000.))[:2])
-        extent=4000 if canal else 20000
+        extent=extent or (4000 if canal else 20000)
         if self.before_prepare is not None:await self.before_prepare()
         job=await self.terrain_region(centre,extent)
         grid=await self.rpc('/terrain/jobs/'+job['id']+'/files/terrain.json',timeout=20)
