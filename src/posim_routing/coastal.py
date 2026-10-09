@@ -259,25 +259,36 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
         nodes = nodes[:end+1]
         # Shorten the grid path without erasing its coastal preference. Long
         # offshore shortcuts across bays have a higher coast-weighted cost.
-        points, index = [[*origin, 0.]], 0
-        while index < len(nodes)-1:
-            chosen = index+1
-            for end in range(min(len(nodes)-1, index+10), index, -1):
-                a, b = xy(nodes[index]), xy(nodes[end])
-                length = math.dist(a, b)
-                count = max(2, math.ceil(length/min(dx, dy)*3))
-                ix = np.rint(np.linspace(nodes[index][1], nodes[end][1], count)).astype(int)
-                iy = np.rint(np.linspace(nodes[index][0], nodes[end][0], count)).astype(int)
-                weighted = length*float(np.mean(penalty[iy, ix]))
-                old = costs[nodes[end]]-costs[nodes[index]]
-                if safe[iy, ix].all() and weighted <= old*1.08:
-                    chosen = end
-                    break
-            points.append(xy(nodes[chosen]))
-            index = chosen
+        def shorten(route, lookahead=None):
+            points, index = [xy(route[0])], 0
+            while index < len(route)-1:
+                chosen = index+1
+                last = min(len(route)-1, index+lookahead) if lookahead else len(route)-1
+                for candidate in range(last, index, -1):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("coastal_planning_budget_exceeded")
+                    a, b = xy(route[index]), xy(route[candidate])
+                    length = math.dist(a, b)
+                    count = max(2, math.ceil(length/min(dx, dy)*3))
+                    ix = np.rint(np.linspace(route[index][1], route[candidate][1], count)).astype(int)
+                    iy = np.rint(np.linspace(route[index][0], route[candidate][0], count)).astype(int)
+                    weighted = length*float(np.mean(penalty[iy, ix]))
+                    old = costs[route[candidate]]-costs[route[index]]
+                    if (safe[iy, ix].all() and weighted <= old*1.08
+                            and validator.segment(a, b)):
+                        chosen = candidate
+                        break
+                points.append(xy(route[chosen]))
+                index = chosen
+            return points
+
+        points = shorten(nodes, lookahead=10)
+        points[0] = [*origin, 0.]
+        onward = shorten([endpoint, *onward_nodes])
         if sum(math.dist(a, b) for a, b in zip(points, points[1:])) > 40000:
             continue
-        if not all(validator.segment(a, b, record=True) for a, b in zip(points, points[1:])):
+        if not all(validator.segment(a, b, record=True) for route in (points, onward)
+                   for a, b in zip(route, route[1:])):
             continue
         return dict(points=[list(inverse.transform(*point[:2])) for point in points[1:]],
                     index=0, mode="coastal", planning_seconds=time.monotonic()-started,
@@ -286,7 +297,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
                     endpoint_standoff_m=float(coast_distance[endpoint]),
                     maximum_preferred_standoff_m=MAXIMUM_STANDOFF_M,
                     progress_to_course_waypoint_m=float(progress[endpoint]),
-                    onward_points=[list(inverse.transform(*xy(node)[:2])) for node in onward_nodes],
+                    onward_points=[list(inverse.transform(*point[:2])) for point in onward[1:]],
                     onward_exit=list(inverse.transform(*xy(goal)[:2])),
                     onward_exit_progress_m=float(progress[goal]),
                     onward_verified=True,

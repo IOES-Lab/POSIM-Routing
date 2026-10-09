@@ -95,6 +95,17 @@ class CoastalPlanning(unittest.TestCase):
         self.assertLess(end_y,-1000)
         self.assert_swept_safe(terrain,start,dict(points=plan['points']+plan['onward_points']))
 
+    def test_long_onward_runs_use_segment_ends_and_keep_the_exit(self):
+        terrain = grid()
+        start = geo(800, -4000)
+        plan = coastal_corridor(terrain, SPEC, start, geo(6500, 9000))
+        self.assertIsNotNone(plan)
+        self.assertGreater(distance(plan['points'][-1], plan['onward_exit']), 5000.)
+        self.assertGreater(len(plan['onward_points']), 0)
+        self.assertLessEqual(len(plan['onward_points']), 4)
+        np.testing.assert_allclose(plan['onward_points'][-1], plan['onward_exit'], atol=1e-10)
+        self.assert_swept_safe(terrain, start, dict(points=plan['points']+plan['onward_points']))
+
     def test_shallow_and_unknown_coast_is_not_a_destination(self):
         terrain = grid()
         heights = np.array(terrain['heights'])

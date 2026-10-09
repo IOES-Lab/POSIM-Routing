@@ -66,6 +66,10 @@ exit from the regional grid. Its endpoint has an onward route around bays and
 headlands. Ordinary coastal course vertices guide progress; ports and required
 passage points retain their arrival checks.
 
+Onward waypoints mark checked segment ends. Straight grid runs are shortened
+when the complete swept corridor passes depth and mapped-land checks. The
+shortened route preserves its exit and coastline preference.
+
 | Policy | Default |
 |---|---|
 | Surface local depth clearance | 1.5 m |
