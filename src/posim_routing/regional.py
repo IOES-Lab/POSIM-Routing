@@ -78,7 +78,12 @@ class RegionalNavigator:
                         state['position'],maximum_offset=200.,minimum_leg=0.,corner_margin=40.))
             if not reached and not passed:break
             plan['index']+=1
-        if plan['index']>=len(plan['points']):return None
+        if plan['index']>=len(plan['points']):
+            # Only consume an explicitly validated finite onward route. This
+            # supplies runway during renewal without extrapolating a tangent.
+            if plan.get('onward_verified') and plan.get('onward_points'):
+                plan['points'].extend(plan.pop('onward_points'));plan['onward_used']=True
+            else:return None
         point=plan['points'][plan['index']]
         # A local detour may bypass the coarse frontier without entering its
         # 80 m arrival circle. Reusing that persisted goal hundreds of km
@@ -101,16 +106,26 @@ class RegionalNavigator:
                 self.discard(state,'regional_goal_progress_stalled')
                 return None
         return point
-    def update(self,state,target,needed=False,terminal=False):
+    def update(self,state,target,needed=False,terminal=False,retain_coast=False):
         from posim_terrain.canal_override import in_region
         canal=in_region(state['position'])
         key=[state['lap'],state['leg'],state['waypoint']]
         from .port_approach import APPROACH_DISTANCE_M
         terminal=terminal and distance(state['position'],target)<APPROACH_DISTANCE_M
+        state.pop('regional_waiting',None)
         if self.key!=key:
             if self.task:self.task.cancel()
             self.task=None;self.key=key;self.retry=0
             self.probed=None
+            plan=state.get('regional_navigation') or {};old=plan.get('route_key')
+            if (retain_coast and not terminal and not canal and old and len(old)==3
+                    and old[:2]==key[:2] and old[2]<key[2]
+                    and plan.get('policy')==REGIONAL_POLICY
+                    and plan.get('mode') in ('coastal','coastal_approach')):
+                plan['route_key']=list(key);plan.pop('continuation',None)
+                state['regional_handoff']=dict(previous_key=old,route_key=list(key),
+                    position=list(state['position']),reason='measured_coastal_shape_advance')
+                self.progress=None
         nearest=None
         if self.coastal and not canal:
             if self.index_task is None and self.coast_index is None:
@@ -145,6 +160,8 @@ class RegionalNavigator:
                      and distance(state['position'],plan['points'][-1])<2500
                      and distance(state['position'],plan.get('probe_position',state['position']))>=1000
                      and (self.probed is None or distance(self.probed,state['position'])>=1000))
+        renew_coast=renew_coast or (point is not None and nearest is not None
+                                    and plan.get('mode')=='coastal' and not plan.get('onward_verified'))
         coast_needed=nearest is not None and (self.probed is None or distance(self.probed,state['position'])>=3000)
         prefer_coast=(point is not None and coast_needed and not needed and
                       (state.get('regional_navigation') or {}).get('mode') not in ('coastal','coastal_approach'))
@@ -160,10 +177,17 @@ class RegionalNavigator:
                 value=self.task.result()
                 # A failed optional preference must preserve a previously
                 # checked detour while waiting for a better coastal region.
-                if not (point is not None and not value['points']):state['regional_navigation']=value
+                coast_plan=(plan.get('route_key')==key and plan.get('mode') in ('coastal','coastal_approach')
+                            and plan.get('policy')==REGIONAL_POLICY)
+                preserve_empty=(not value['points'] and (point is not None or
+                                (coast_plan and nearest is not None and not terminal and not needed)))
+                if not preserve_empty:state['regional_navigation']=value
                 self.probed=list(value['probe_position']) if value.get('mode') not in ('coastal','coastal_approach') else None
                 state['regional_planning']=dict(status='ready' if value['points'] else 'course_retained',
                                                 job=value['job'],mode=value.get('mode','detour'),coastal_preference_error=value.get('coastal_preference_error'))
+                if preserve_empty and coast_plan:
+                    self.probed=None;self.retry=time.monotonic()+60
+                    state['regional_planning']['status']='retrying'
             except (Exception,asyncio.CancelledError) as e:
                 state['regional_planning']=dict(status='retrying',reason=str(e)[:160]);self.retry=time.monotonic()+60
             self.task=None
@@ -179,18 +203,19 @@ class RegionalNavigator:
             state['regional_planning']=dict(status='background',mode='port_approach' if terminal else 'coastal' if coast_needed else 'detour')
             self.task=asyncio.create_task(self.prepare_port(state,target,key) if terminal else self.prepare(state,target,key,nearest,needed))
         if point is not None:return point
-        if self.task and plan.get('route_key')==key and plan.get('mode') in ('coastal','coastal_approach'):
-            points=plan.get('points',[])
-            if len(points)>=2 and distance(state['position'],points[-1])<1500:
-                continuation=plan.get('continuation')
-                if continuation is None or distance(state['position'],continuation)<80:
-                    heading=GEO.inv(*points[-2],*points[-1])[0]
-                    continuation=list(GEO.fwd(*state['position'],heading,750.)[:2])
-                    plan['continuation']=continuation
-                if distance(continuation,target)<distance(state['position'],target):
-                    # Only a goal proposal: the native resident-terrain planner
-                    # must approve it before thrust is commanded.
-                    return continuation
+        plan=state.get('regional_navigation') or {}
+        if (plan.get('route_key')==key and plan.get('policy')==REGIONAL_POLICY
+                and plan.get('mode') in ('coastal','coastal_approach') and plan.get('points')
+                and plan['index']>=len(plan['points'])
+                and distance(state['position'],plan['points'][-1])<1500
+                and (nearest is not None or self.task or self.index_task)):
+            # An exhausted checked path is not permission to steer offshore.
+            # The caller holds thrust, keeping physics and sensors running.
+            # Retry backoff and optional empty results retain this boundary.
+            plan.pop('continuation',None)
+            state['regional_waiting']=dict(reason='coastal_renewal',job=plan['job'],
+                                           endpoint=plan['points'][-1])
+            return plan['points'][-1]
         return target
     async def prepare_port(self,state,target,key):
         # A port's narrow entrance is resolved by the same triangles already

@@ -9,7 +9,7 @@ from pyproj import Geod
 GEO = Geod(ellps='WGS84')
 
 
-def passed_vertex(previous, vertex, following, position, maximum_offset=80000., minimum_leg=2000., corner_margin=2000.):
+def passed_vertex(previous, vertex, following, position, maximum_offset=80000., minimum_leg=2000., corner_margin=2000., adjacent_limit=True):
     incoming_back, _, incoming = GEO.inv(*vertex, *previous)
     outgoing_bearing, _, outgoing = GEO.inv(*vertex, *following)
     bearing, _, separation = GEO.inv(*vertex, *position)
@@ -20,7 +20,8 @@ def passed_vertex(previous, vertex, following, position, maximum_offset=80000., 
     # that its vertex has been passed. Only round ordinary progressive bends.
     if math.cos(math.radians(outgoing_bearing-incoming_bearing)) < -.25:
         return False
-    if separation > min(maximum_offset, min(incoming, outgoing)*.5):
+    horizon = min(maximum_offset, min(incoming, outgoing)*.5) if adjacent_limit else maximum_offset
+    if separation > horizon:
         return False
     along_in = separation*math.cos(math.radians(bearing-incoming_bearing))
     along_out = separation*math.cos(math.radians(bearing-outgoing_bearing))
@@ -48,7 +49,7 @@ def coastal_shape(leg, index, state):
 def passed_coastal_shape(leg, index, state):
     points=leg['coordinates']
     return coastal_shape(leg,index,state) and passed_vertex(
-        points[index-1],points[index],points[index+1],state['position'])
+        points[index-1],points[index],points[index+1],state['position'],adjacent_limit=False)
 
 
 def course_target(leg,index,state):
@@ -58,5 +59,9 @@ def course_target(leg,index,state):
     incoming_back,_,incoming=GEO.inv(*vertex,*points[index-1])
     bearing,_,outgoing=GEO.inv(*vertex,*points[index+1])
     if min(incoming,outgoing)<2000 or math.cos(math.radians(bearing-incoming_back-180.))<-.25:return vertex
-    if GEO.inv(*state['position'],*vertex)[2]>min(80000.,min(incoming,outgoing)*.5):return vertex
-    return list(GEO.fwd(*vertex,bearing,min(25000.,outgoing*.25))[:2])
+    if GEO.inv(*state['position'],*vertex)[2]>80000.:return vertex
+    # Coastal travel can pass well inside an offshore graph bend. A short
+    # offset from that bend still pulls the vessel out to sea. Plan towards
+    # the onward vertex; measured passage advances the shape index separately.
+    # Neither this goal proposal nor passage records arrival at the final port.
+    return list(points[index+1])

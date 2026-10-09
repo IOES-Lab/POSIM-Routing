@@ -50,6 +50,11 @@ path = planner.route(start, goal)
 
 Choose start and goal inside confirmed water. The planner rejects unknown coverage and continuously checks the swept footprint against the piecewise planar collision field.
 
+Coastal lookahead follows a checked water route to the onward target or a forward
+exit from the regional grid. Its endpoint has an onward route around bays and
+headlands. Ordinary coastal course vertices guide progress; ports and required
+passage points retain their arrival checks.
+
 | Policy | Default |
 |---|---|
 | Surface local depth clearance | 1.5 m |
@@ -89,6 +94,12 @@ search retains the supplied route. Numeric terrain checks remain necessary.
 | `tests/` | Coastal, coverage and background planning contracts |
 
 `RegionalNavigator` accepts an async `rpc(path, body=None, timeout=...)` callback for `/terrain/jobs` and job reads. The optional `before_prepare` callback lets the caller manage its cache. It does not start or stop Gazebo.
+
+Set `retain_coast=True` only for an ordinary shape advance within the same leg.
+When `state['regional_waiting']` is present, the caller holds thrust until a
+checked replacement is ready. Physics and sensor sampling continue during the
+wait. Failed or empty optional renewal cannot replace a checked coastal route
+with an offshore goal.
 
 ## Tests and terms
 
