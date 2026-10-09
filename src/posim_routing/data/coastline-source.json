@@ -1,0 +1,9 @@
+{
+  "source": "Natural Earth 1:10 million coastline",
+  "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_coastline.geojson",
+  "description_url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-coastline/",
+  "terms_url": "https://www.naturalearthdata.com/about/terms-of-use/",
+  "sha256": "6f75ae0e0de157b14946e2255eb1f5486d9a13819032e26d4610852d296788f6",
+  "scope": "Discovery of coastal regions only; actual terrain controls navigation",
+  "features": 4133
+}

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "posim-routing"
+version = "0.1.0"
+description = "Global maritime and terrain checked coastal route planning"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+readme = "README.md"
+dependencies = ["posim-terrain>=0.1.0", "numpy>=1.24", "scipy>=1.10", "pyproj>=3.5", "searoute==1.4.3", "shapely>=2", "pyogrio>=0.7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+posim_routing = ["data/*"]

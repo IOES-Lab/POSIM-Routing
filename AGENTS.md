@@ -1,0 +1,1 @@
+Write public documentation in concise current tense. Keep English and Korean facts aligned. Describe numeric defaults in bullets or tables. Keep development history and validation records out of user guides. Preserve source attribution and data limitations. Run tests for affected behavior.
