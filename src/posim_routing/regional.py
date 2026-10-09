@@ -6,7 +6,7 @@ in native Gazebo. Downloading/planning never pauses the promotional world.
 import asyncio,math,time
 from pyproj import Geod
 GEO=Geod(ellps='WGS84')
-REGIONAL_POLICY='buffered-water-v8-mapped-land-exclusion'
+REGIONAL_POLICY='buffered-water-v9-destination-progress'
 REGIONAL_BUFFER_M=40.
 REGIONAL_DEPTH_M=2.
 
@@ -109,7 +109,7 @@ class RegionalNavigator:
                 self.discard(state,'regional_goal_progress_stalled')
                 return None
         return point
-    def update(self,state,target,needed=False,terminal=False,retain_coast=False):
+    def update(self,state,target,needed=False,terminal=False,retain_coast=False,progress_target=None):
         from posim_terrain.canal_override import in_region
         canal=in_region(state['position'])
         key=[state['lap'],state['leg'],state['waypoint']]
@@ -213,7 +213,7 @@ class RegionalNavigator:
         coast_needed=nearest is not None and (self.probed is None or distance(self.probed,state['position'])>=3000)
         if (prefer_port or needed or coast_needed or renew_coast) and not self.task and time.monotonic()>=self.retry:
             state['regional_planning']=dict(status='background',mode='port_approach' if terminal else 'coastal' if coast_needed else 'detour')
-            self.task=asyncio.create_task(self.prepare_port(state,target,key) if terminal else self.prepare(state,target,key,nearest,needed))
+            self.task=asyncio.create_task(self.prepare_port(state,target,key) if terminal else self.prepare(state,target,key,nearest,needed,progress_target=progress_target))
         if point is not None:return point
         plan=state.get('regional_navigation') or {}
         if (plan.get('route_key')==key and plan.get('policy')==REGIONAL_POLICY
@@ -279,7 +279,7 @@ class RegionalNavigator:
             except Exception:break
             if (sources.get('baseline_status') or {}).get('status')!='unavailable':break
         raise RuntimeError('regional_terrain_unavailable')
-    async def prepare(self,state,target,key,nearest=None,needed=True,extent=None):
+    async def prepare(self,state,target,key,nearest=None,needed=True,extent=None,progress_target=None):
         from posim_terrain.canal_override import in_region
         canal=in_region(state['position'])
         if self.coastal and not canal and nearest is None and self.index_task is not None:
@@ -308,7 +308,7 @@ class RegionalNavigator:
             from .land import guard_from_spec
             guard=await asyncio.to_thread(guard_from_spec,job['spec'],64000.)
         current=list(state['position'])
-        course_target=target;guidance=None
+        course_target=target;progress_target=progress_target or target;guidance=None
         if guard is not None:
             from posim_terrain.terrain import projection
             from .land_guidance import detour,local_target
@@ -328,21 +328,24 @@ class RegionalNavigator:
         value=None;coast_error=None
         if not canal and (nearest or needed):
             from .coastal import coastal_corridor
-            try:value=await asyncio.to_thread(coastal_corridor,grid,job['spec'],current,target,guard=guard)
+            try:value=await asyncio.to_thread(coastal_corridor,grid,job['spec'],current,target,guard=guard,progress_target=progress_target)
             except RuntimeError as error:coast_error=str(error)[:160]
         if value is None:
             current=list(state['position'])
             approach=None
             if nearest:
                 from .coastal import coastal_approach
-                approach=coastal_approach(current,target,nearest[1])
+                approach=coastal_approach(current,target,nearest[1],progress_target=progress_target)
             if approach:
                 try:
                     # This small step is checked against real numeric depth,
                     # then checked again against the live Gazebo collision mesh.
                     value=await asyncio.to_thread(corridor,grid,job['spec'],current,approach,guard=guard)
                     endpoint=value['points'][-1]
-                    if (distance(current,target)-distance(endpoint,target)<500 or
+                    from .coastal import MAXIMUM_COASTAL_DETOUR_RATIO
+                    path_length=sum(distance(a,b) for a,b in zip([current,*value['points'][:-1]],value['points']))
+                    if (distance(current,progress_target)-distance(endpoint,progress_target)<path_length/MAXIMUM_COASTAL_DETOUR_RATIO or
+                        distance(current,target)-distance(endpoint,target)<500 or
                         distance(current,nearest[1])-distance(endpoint,nearest[1])<500):
                         value=None
                     else:
@@ -360,6 +363,7 @@ class RegionalNavigator:
         value.update(route_key=key,job=job['id'],source=job['manifest']['source'],policy=REGIONAL_POLICY,
                      mapped_land_checked=guard is not None)
         value['probe_position']=current
+        value['destination_progress_target']=list(progress_target)
         return value
     async def close(self):
         if self.task:
