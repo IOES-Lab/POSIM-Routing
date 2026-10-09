@@ -311,14 +311,12 @@ class RegionalNavigator:
         course_target=target;progress_target=progress_target or target;guidance=None
         if guard is not None:
             from posim_terrain.terrain import projection
-            from .land_guidance import detour,local_target
+            from .land_guidance import detour,local_target,horizon_target
             _,forward,inverse=projection(job['spec'])
             origin=forward.transform(*current);destination=forward.transform(*target)
             # Check a complete around-land connection before selecting a local
             # numeric goal. A peninsula can require temporary distance loss.
-            length=math.dist(origin,destination)
-            if length>50000.:
-                destination=[origin[i]+(destination[i]-origin[i])*50000./length for i in (0,1)]
+            destination=horizon_target(guard,origin,destination)
             points=await asyncio.to_thread(detour,guard,origin,destination)
             if len(points)>1:
                 target=list(inverse.transform(*local_target(origin,points)))

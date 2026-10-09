@@ -13,7 +13,7 @@ from posim_routing.land import LandGuard, LandExcludedField, guard_from_spec
 from posim_routing.navigation import TerrainField, DetourPlanner
 from posim_routing.planning import CachedTerrain
 from posim_routing.coastal import coastal_corridor
-from posim_routing.land_guidance import detour,local_target
+from posim_routing.land_guidance import detour,local_target,horizon_target
 from posim_terrain.terrain import projection
 
 SPEC=dict(latitude=35.,longitude=129.,width_m=20000.,height_m=20000.,samples=257)
@@ -108,6 +108,34 @@ class LandExclusion(unittest.TestCase):
         guard=LandGuard(shapely.box(-1000,-1000,1000,1000),shapely.box(-30000,-30000,30000,30000))
         with self.assertRaisesRegex(RuntimeError,'endpoint_blocked'):
             detour(guard,[-5000,0],[0,0])
+
+    def test_clipped_long_distance_endpoint_renews_in_checked_water(self):
+        guard=LandGuard(shapely.box(48000,-1000,52000,1000),
+                        shapely.box(-64000,-64000,64000,64000))
+        start=[0,0];destination=[100000,0]
+        point=horizon_target(guard,start,destination)
+        self.assertEqual(point,[47000.,0.])
+        self.assertTrue(guard.free(*point,40.))
+        self.assertEqual(detour(guard,start,point),[point])
+
+    def test_actual_blocked_destination_is_preserved_and_rejected(self):
+        guard=LandGuard(shapely.box(9000,-1000,11000,1000),
+                        shapely.box(-64000,-64000,64000,64000))
+        point=horizon_target(guard,[0,0],[10000,0])
+        self.assertEqual(point,[10000,0])
+        with self.assertRaisesRegex(RuntimeError,'endpoint_blocked'):
+            detour(guard,[0,0],point)
+
+    def test_clipped_endpoint_does_not_bypass_unknown_or_blocked_water(self):
+        for guard in (
+            LandGuard(shapely.box(6000,-1000,52000,1000),shapely.box(-64000,-64000,64000,64000)),
+            LandGuard(shapely.GeometryCollection(),shapely.box(-1000,-1000,1000,1000))):
+            with self.assertRaisesRegex(RuntimeError,'horizon_blocked'):
+                horizon_target(guard,[0,0],[100000,0])
+
+    def test_clear_virtual_endpoint_retains_full_lookahead(self):
+        guard=LandGuard(shapely.GeometryCollection(),shapely.box(-64000,-64000,64000,64000))
+        self.assertEqual(horizon_target(guard,[0,0],[100000,0]),[50000.,0.])
 
     def test_land_dataset_queries_both_sides_of_date_line(self):
         spec={**SPEC,'longitude':179.999}

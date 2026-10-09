@@ -6,6 +6,23 @@ import time
 import numpy as np
 
 
+def horizon_target(guard, start, target, horizon=50000., radius=40.):
+    """Clip a distant guide to water; preserve real destination endpoints."""
+    length=math.dist(start,target)
+    if length<=horizon:
+        return list(target)
+    # A virtual endpoint can land on a peninsula even when the actual goal
+    # is at sea. Move it back along the same bearing, then let detour check
+    # the complete connection. Unknown coverage is rejected by guard.free.
+    reach=horizon
+    while reach>=6500.:
+        point=[start[i]+(target[i]-start[i])*reach/length for i in (0,1)]
+        if guard.free(*point,radius):
+            return point
+        reach-=1500.
+    raise RuntimeError('mapped_guidance_horizon_blocked')
+
+
 def detour(guard, start, target, step=150., radius=40., timeout=12.):
     """Return a complete mapped-water route, including necessary initial retreat.
 
