@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-Plan global maritime routes, terrain-checked coastal corridors and port approaches. A global graph supplies the itinerary; numeric terrain approves regional and local paths. WWW-POSIM connects these planners to its terrain workers and voyage coordinator.
+Plan global maritime routes, coastal corridors and port approaches. A global graph supplies the itinerary. Numeric terrain checks depth, and mapped land excludes shore crossings. WWW-POSIM connects these planners to its terrain workers and voyage coordinator.
 
 ## Install
 
@@ -50,6 +50,17 @@ path = planner.route(start, goal)
 
 Choose start and goal inside confirmed water. The planner rejects unknown coverage and continuously checks the swept footprint against the piecewise planar collision field.
 
+`land.LandExcludedField(field, guard)` adds mapped-land exclusion to a numeric
+field. `land.guard_from_spec(spec)` reads the cached OSM land polygon archive.
+Set `WWOS_COAST_OSM_ARCHIVE` to another local archive path. WWW-POSIM prepares
+this dataset in its terrain provider cache. Missing data holds regional planning.
+OSM land can reject a path; numeric terrain must still establish water depth.
+
+Regional lookahead finds a complete mapped detour around a peninsula before
+selecting a local depth-checked goal. The detour can initially increase distance
+to the course target. At its checked endpoint, the caller waits for the next
+checked segment. Longitude wrapping supports the international date line.
+
 Coastal lookahead follows a checked water route to the onward target or a forward
 exit from the regional grid. Its endpoint has an onward route around bays and
 headlands. Ordinary coastal course vertices guide progress; ports and required
@@ -86,6 +97,7 @@ search retains the supplied route. Numeric terrain checks remain necessary.
 | `connections.py` | Coast-aware port connectors |
 | `navigation.py`, `planning.py` | Collision field, swept-footprint A* and cached terrain |
 | `coastal.py` | Coastal discovery and numeric corridors |
+| `land.py`, `land_guidance.py` | Mapped-land exclusion and bounded around-land guidance |
 | `regional.py` | Asynchronous regional lookahead |
 | `arrival_targets.py` | Buffered numeric arrival water and optional OSM land checks |
 | `port_approach.py` | Arrival-region corridors and bend braking |

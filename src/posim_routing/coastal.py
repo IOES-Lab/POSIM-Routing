@@ -1,7 +1,8 @@
-"""Prefer visible coast without treating a cartographic shoreline as collision data.
+"""Prefer visible coast with numeric depth and optional mapped-land exclusions.
 
 Natural Earth only discovers regions worth querying. Numeric terrain determines
-the shoreline, depth, and every regional corridor. The native Gazebo planner
+depth and every regional corridor. Mapped land can only reject travel.
+The native Gazebo planner
 independently approves each local corridor against its resident collision mesh.
 """
 import gzip
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 from pyproj import Geod
-from scipy.ndimage import distance_transform_edt, maximum_filter
+from scipy.ndimage import distance_transform_edt, maximum_filter, label
 from scipy.spatial import cKDTree
 
 GEO = Geod(ellps="WGS84")
@@ -110,7 +111,7 @@ def coastal_approach(start, target, shore):
     return candidate
 
 
-def coastal_corridor(terrain, spec, start, target, timeout=25.):
+def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
     """Return a progressive coastal path, or None to retain the maritime course.
 
     A bounded weighted A* prefers a 250 m stand-off. It cannot invent land or
@@ -128,6 +129,8 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
     xs, ys, heights = field.xs, field.ys, field.heights
     finite = np.isfinite(heights)
     land = finite & (heights >= 0)
+    if guard is not None:
+        land |= ~guard.grid(xs, ys)
     if not land.any():
         return None
     origin = np.array(forward.transform(*start))
@@ -145,6 +148,8 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
     bounds = maximum_filter(np.where(finite, heights, math.inf), size=size,
                             mode="constant", cval=math.inf)
     safe = bounds <= -MINIMUM_DEPTH_M
+    if guard is not None:
+        safe &= guard.grid(xs, ys, margin)
     coast_distance = distance_transform_edt(~land, sampling=(dy, dx))
     xx, yy = np.meshgrid(xs, ys)
     travel = np.hypot(xx-origin[0], yy-origin[1])
@@ -159,12 +164,20 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
     # a through route to the onward target or a forward water exit, then take
     # its coastal prefix. Distance gain at an isolated endpoint is insufficient.
     goal_node = (int(np.argmin(abs(ys-destination[1]))), int(np.argmin(abs(xs-destination[0]))))
+    start_node = (int(np.argmin(abs(ys-origin[1]))), int(np.argmin(abs(xs-origin[0]))))
+    if not safe[start_node]:
+        return None
+    # Rank reachable exits. A nearer exit beyond a reclaimed peninsula can
+    # belong to a disconnected water component. Diagonal corner cutting is
+    # forbidden, so four-neighbour connectivity matches the search contract.
+    components, _ = label(safe)
+    reachable = components == components[start_node]
     target_inside = (xs[0]+margin < destination[0] < xs[-1]-margin
                      and ys[0]+margin < destination[1] < ys[-1]-margin
-                     and safe[goal_node])
+                     and safe[goal_node] and reachable[goal_node])
     edge = ((xx <= xs[0]+margin+2*dx) | (xx >= xs[-1]-margin-2*dx)
             | (yy <= ys[0]+margin+2*dy) | (yy >= ys[-1]-margin-2*dy))
-    exits = safe & edge & (travel >= 1000) & (progress >= min(1000., remaining*.2))
+    exits = safe & reachable & edge & (travel >= 1000) & (progress >= min(1000., remaining*.2))
     scores = np.where(exits, to_target, math.inf)
     goals = []
     if target_inside:
@@ -177,7 +190,11 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
         scores[np.hypot(xx-xs[node[1]], yy-ys[node[0]]) < 600] = math.inf
     penalty = (1 + np.minimum(1,np.abs(coast_distance-STANDOFF_M)/STANDOFF_M)
                + 8*np.minimum(6,np.maximum(0,coast_distance-(STANDOFF_M+150))/500))
-    validator = DetourPlanner(CachedTerrain(field), [*origin, 0.], True,
+    checked = CachedTerrain(field)
+    if guard is not None:
+        from .land import LandExcludedField
+        checked = LandExcludedField(checked, guard)
+    validator = DetourPlanner(checked, [*origin, 0.], True,
                              timeout=timeout, maximum_radius=18000, maximum_length=40000)
     validator.radius = REGIONAL_BUFFER_M
     validator.clearance = MINIMUM_DEPTH_M
@@ -187,7 +204,6 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
     def xy(node):
         return [float(xs[node[1]]), float(ys[node[0]]), 0.]
 
-    start_node = (int(np.argmin(abs(ys-origin[1]))), int(np.argmin(abs(xs-origin[0]))))
     if not safe[start_node] or not validator.segment([*origin, 0.], xy(start_node)):
         return None
     expanded = 0
