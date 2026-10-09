@@ -62,6 +62,22 @@ class LandExclusion(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'data_unavailable'):
                 guard_from_spec(SPEC)
 
+    def test_shortened_onward_segments_keep_a_required_mapped_land_turn(self):
+        axis=np.linspace(-10000.,10000.,257);xx,yy=np.meshgrid(axis,axis)
+        grid=dict(xs=axis.tolist(),ys=axis.tolist(),heights=np.where(xx<=0,20.,-20.).tolist())
+        # Both numeric terrain and unbuffered grid vertices miss this thin bank.
+        land=shapely.union_all([shapely.box(-11000,-11000,0,11000),
+                               shapely.box(3000,8000,3002,9500)])
+        guard=LandGuard(land,shapely.box(-11000,-11000,11000,11000))
+        start=list(INVERSE.transform(800,-4000));target=list(INVERSE.transform(6500,9000))
+        plan=coastal_corridor(grid,SPEC,start,target,guard=guard)
+        self.assertIsNotNone(plan)
+        onward=[[*FORWARD.transform(*p),0.] for p in [plan['points'][-1],*plan['onward_points']]]
+        self.assertFalse(guard.segment(onward[0],onward[-1],40.))
+        self.assertGreater(len(plan['onward_points']),1)
+        self.assertTrue(all(guard.segment(a,b,40.) for a,b in zip(onward,onward[1:])))
+        np.testing.assert_allclose(plan['onward_points'][-1],plan['onward_exit'],atol=1e-10)
+
     def test_nearer_disconnected_exits_do_not_hide_reachable_water_exit(self):
         axis=np.linspace(-10000.,10000.,257)
         grid=dict(xs=axis.tolist(),ys=axis.tolist(),heights=np.full((257,257),-20.).tolist())

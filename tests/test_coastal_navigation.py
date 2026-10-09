@@ -95,6 +95,17 @@ class CoastalPlanning(unittest.TestCase):
         self.assertLess(end_y,-1000)
         self.assert_swept_safe(terrain,start,dict(points=plan['points']+plan['onward_points']))
 
+    def test_long_onward_runs_use_segment_ends_and_keep_the_exit(self):
+        terrain = grid()
+        start = geo(800, -4000)
+        plan = coastal_corridor(terrain, SPEC, start, geo(6500, 9000))
+        self.assertIsNotNone(plan)
+        self.assertGreater(distance(plan['points'][-1], plan['onward_exit']), 5000.)
+        self.assertGreater(len(plan['onward_points']), 0)
+        self.assertLessEqual(len(plan['onward_points']), 4)
+        np.testing.assert_allclose(plan['onward_points'][-1], plan['onward_exit'], atol=1e-10)
+        self.assert_swept_safe(terrain, start, dict(points=plan['points']+plan['onward_points']))
+
     def test_shallow_and_unknown_coast_is_not_a_destination(self):
         terrain = grid()
         heights = np.array(terrain['heights'])
@@ -203,6 +214,23 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         sample['position']=geo(800,6010)
         self.assertEqual(navigator.update(sample,target),point)
         self.assertNotIn('continuation',sample['regional_navigation'])
+        await navigator.close()
+
+    async def test_saved_grid_lookahead_renews_without_discarding_its_checked_target(self):
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        class Near:
+            def nearest(self,position):return 1000.,geo(0,0)
+        key=[0,0,1];point=geo(800,9000);position=geo(800,0)
+        sample=dict(lap=0,leg=0,waypoint=1,position=position,status='sailing',native={},
+            regional_navigation=dict(points=[point],index=0,mode='coastal',route_key=key,
+                policy=REGIONAL_POLICY,probe_position=geo(800,-5000),onward_verified=True,
+                onward_points=[geo(6500,9000)],job='checked'))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near()
+        self.assertEqual(navigator.update(sample,geo(6500,9000)),point)
+        self.assertIsNotNone(navigator.task)
+        self.assertEqual(sample['regional_navigation']['job'],'checked')
+        self.assertEqual(sample['position'],position)
+        self.assertEqual(sample['status'],'sailing')
         await navigator.close()
 
     async def test_recorded_shape_handoff_preserves_checked_coast(self):

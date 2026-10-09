@@ -168,8 +168,10 @@ class RegionalNavigator:
                      and distance(state['position'],plan['points'][-1])<2500
                      and distance(state['position'],plan.get('probe_position',state['position']))>=1000
                      and (self.probed is None or distance(self.probed,state['position'])>=1000))
+        from .coastal import WAYPOINT_FORMAT
         renew_coast=renew_coast or (point is not None and nearest is not None
-                                    and plan.get('mode')=='coastal' and not plan.get('onward_verified'))
+                                    and plan.get('mode')=='coastal'
+                                    and (not plan.get('onward_verified') or plan.get('waypoint_format')!=WAYPOINT_FORMAT))
         coast_needed=nearest is not None and (self.probed is None or distance(self.probed,state['position'])>=3000)
         prefer_coast=(point is not None and coast_needed and not needed and
                       (state.get('regional_navigation') or {}).get('mode') not in ('coastal','coastal_approach'))
