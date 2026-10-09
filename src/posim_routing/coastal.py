@@ -151,29 +151,32 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
     safe &= travel <= 18000
     to_target = np.hypot(xx-destination[0], yy-destination[1])
     progress = remaining-to_target
-    # Never select a coast on the other side of an island solely for its view.
-    candidates = safe & (coast_distance >= 200) & (coast_distance <= MAXIMUM_STANDOFF_M)
-    candidates &= (travel >= 1000) & (travel <= 15000)
-    candidates &= progress >= min(1000., remaining*.2)
-    if not candidates.any():
+    coast = safe & (coast_distance >= 200) & (coast_distance <= MAXIMUM_STANDOFF_M)
+    coast &= (travel >= 1000) & (travel <= 15000)
+    if not (coast & (progress >= min(1000., remaining*.2))).any():
         return None
-    heading = (destination-origin)/remaining
-    nominal = origin + heading*min(7500., remaining)
-    # Rank stand-off bands before along-course convenience. Otherwise a
-    # waypoint a few kilometres nearer the nominal route can win even when
-    # an equally safe 250 m coastal corridor exists. One grid cell reflects
-    # the shoreline resolution; it is not permission to relax hull clearance.
-    band = np.floor(np.abs(coast_distance-STANDOFF_M)/max(dx, dy))
-    score = band*100000. + np.hypot(xx-nominal[0], yy-nominal[1])
-    scores = np.where(candidates, score, math.inf)
+    # A near-coast endpoint can be the head of a closed bay. First establish
+    # a through route to the onward target or a forward water exit, then take
+    # its coastal prefix. Distance gain at an isolated endpoint is insufficient.
+    goal_node = (int(np.argmin(abs(ys-destination[1]))), int(np.argmin(abs(xs-destination[0]))))
+    target_inside = (xs[0]+margin < destination[0] < xs[-1]-margin
+                     and ys[0]+margin < destination[1] < ys[-1]-margin
+                     and safe[goal_node])
+    edge = ((xx <= xs[0]+margin+2*dx) | (xx >= xs[-1]-margin-2*dx)
+            | (yy <= ys[0]+margin+2*dy) | (yy >= ys[-1]-margin-2*dy))
+    exits = safe & edge & (travel >= 1000) & (progress >= min(1000., remaining*.2))
+    scores = np.where(exits, to_target, math.inf)
     goals = []
-    for _ in range(6):
+    if target_inside:
+        goals.append(goal_node)
+    for _ in range(0 if target_inside else 6):
         node = tuple(map(int, np.unravel_index(np.argmin(scores), scores.shape)))
         if not math.isfinite(float(scores[node])):
             break
         goals.append(node)
         scores[np.hypot(xx-xs[node[1]], yy-ys[node[0]]) < 600] = math.inf
-    penalty = 1 + 8*np.minimum(6, np.maximum(0, coast_distance-(STANDOFF_M+150))/500)
+    penalty = (1 + np.minimum(1,np.abs(coast_distance-STANDOFF_M)/STANDOFF_M)
+               + 8*np.minimum(6,np.maximum(0,coast_distance-(STANDOFF_M+150))/500))
     validator = DetourPlanner(CachedTerrain(field), [*origin, 0.], True,
                              timeout=timeout, maximum_radius=18000, maximum_length=40000)
     validator.radius = REGIONAL_BUFFER_M
@@ -221,6 +224,23 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
         while nodes[-1] != start_node:
             nodes.append(parents[nodes[-1]])
         nodes.reverse()
+        coastal_nodes = [index for index,node in enumerate(nodes) if coast[node]]
+        if not coastal_nodes:
+            continue
+        if not any(progress[nodes[index]] >= min(1000., remaining*.2) for index in coastal_nodes):
+            continue
+        through = [[*origin, 0.], *[xy(node) for node in nodes[1:]]]
+        if sum(math.dist(a, b) for a, b in zip(through, through[1:])) > 40000:
+            continue
+        if not all(validator.segment(a,b,record=True) for a,b in zip(through,through[1:])):
+            continue
+        bands = {index: math.floor(abs(coast_distance[nodes[index]]-STANDOFF_M)/max(dx,dy))
+                 for index in coastal_nodes}
+        closest_band = min(bands.values())
+        end = max(index for index in coastal_nodes if bands[index]==closest_band)
+        onward_nodes = nodes[end+1:]
+        endpoint = nodes[end]
+        nodes = nodes[:end+1]
         # Shorten the grid path without erasing its coastal preference. Long
         # offshore shortcuts across bays have a higher coast-weighted cost.
         points, index = [[*origin, 0.]], 0
@@ -247,8 +267,12 @@ def coastal_corridor(terrain, spec, start, target, timeout=25.):
                     index=0, mode="coastal", planning_seconds=time.monotonic()-started,
                     search_nodes=expanded, minimum_regional_clearance_m=validator.minimum,
                     preferred_standoff_m=STANDOFF_M,
-                    endpoint_standoff_m=float(coast_distance[goal]),
+                    endpoint_standoff_m=float(coast_distance[endpoint]),
                     maximum_preferred_standoff_m=MAXIMUM_STANDOFF_M,
-                    progress_to_course_waypoint_m=float(progress[goal]),
+                    progress_to_course_waypoint_m=float(progress[endpoint]),
+                    onward_points=[list(inverse.transform(*xy(node)[:2])) for node in onward_nodes],
+                    onward_exit=list(inverse.transform(*xy(goal)[:2])),
+                    onward_exit_progress_m=float(progress[goal]),
+                    onward_verified=True,
                     scope="numeric terrain coastal preference; native corridors checked separately")
     return None

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "posim-routing"
-version = "0.1.1"
+version = "0.1.2"
 description = "Global maritime and terrain checked coastal route planning"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}

@@ -77,6 +77,24 @@ class CoastalPlanning(unittest.TestCase):
         self.assertGreater(points[:, 0].max(), 2000)
         self.assert_swept_safe(terrain, start, plan)
 
+    def test_closed_bay_requires_an_onward_water_exit(self):
+        terrain = grid()
+        x,y = np.meshgrid(terrain['xs'],terrain['ys'])
+        # Bay opens east; its western head is nearer the southwest goal.
+        land = (x < -2000) | ((y < -1000) & (x < 5000)) | ((y > 4500) & (x < 5000))
+        terrain['heights'] = np.where(land,20.,-15.).tolist()
+        start,target = geo(1000,2000),geo(-20000,-20000)
+        plan = coastal_corridor(terrain,SPEC,start,target)
+        self.assertIsNotNone(plan)
+        self.assertTrue(plan['onward_verified'])
+        exit_x,exit_y = FORWARD.transform(*plan['onward_exit'])
+        self.assertGreater(exit_x,5000)
+        self.assertLess(exit_y,-9000)
+        end_x,end_y = FORWARD.transform(*plan['points'][-1])
+        self.assertGreater(end_x,5000)
+        self.assertLess(end_y,-1000)
+        self.assert_swept_safe(terrain,start,dict(points=plan['points']+plan['onward_points']))
+
     def test_shallow_and_unknown_coast_is_not_a_destination(self):
         terrain = grid()
         heights = np.array(terrain['heights'])
@@ -154,15 +172,75 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(navigator.update(sample,target),point)
             self.assertIs(navigator.task,pending)
         self.assertEqual(sample['status'],'sailing')
-        # If slow background preparation outlasts the old coast plan, propose
-        # its tangent, not the offshore graph point. Goal stays fixed between
-        # samples, and native collision approval remains required downstream.
-        sample['position']=geo(800,6100)
-        continuation=navigator.update(sample,target)
-        self.assertLess(distance(sample['position'],continuation),751)
-        self.assertNotEqual(continuation,target)
-        sample['position']=geo(800,6110)
-        self.assertEqual(navigator.update(sample,target),continuation)
+        # Exhaust the checked path during a slow download. No tangent may be
+        # chained indefinitely, even if it would approach the offshore target.
+        sample['position']=geo(800,6000)
+        sample['regional_navigation']['job']='checked'
+        self.assertEqual(navigator.update(sample,target),point)
+        self.assertEqual(sample['regional_waiting']['reason'],'coastal_renewal')
+        sample['position']=geo(800,6010)
+        self.assertEqual(navigator.update(sample,target),point)
+        self.assertNotIn('continuation',sample['regional_navigation'])
+        await navigator.close()
+
+    async def test_recorded_shape_handoff_preserves_checked_coast(self):
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        class Near:
+            def nearest(self,position):return 4000.,[118.73,24.7]
+        old=[0,2,7];point=[118.7441,24.6863]
+        sample=dict(lap=0,leg=2,waypoint=8,position=[118.75956451849835,24.67215438376837],
+            regional_navigation=dict(route_key=old,points=[point],index=0,mode='coastal',
+                                     policy=REGIONAL_POLICY,probe_position=[118.760,24.671],job='checked'),native={})
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=old
+        self.assertEqual(navigator.update(sample,[118.48391605957087,24.503214246085488],retain_coast=True),point)
+        self.assertEqual(sample['regional_navigation']['route_key'],[0,2,8])
+        self.assertEqual(sample['regional_handoff']['previous_key'],old)
+        await navigator.close()
+
+    async def test_handoff_requires_ordinary_shape_in_same_leg_and_lap(self):
+        import copy
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        original=dict(lap=0,leg=2,waypoint=8,position=geo(800,0),
+            regional_navigation=dict(route_key=[0,2,7],points=[geo(800,3000)],index=0,mode='coastal',
+                                     policy=REGIONAL_POLICY,job='checked'),native={})
+        for overrides,retain,terminal in [({},False,False),({'leg':3},True,False),
+                    ({'lap':1},True,False),({'waypoint':6},True,False),({},True,True)]:
+            sample=copy.deepcopy(original);sample.update(overrides)
+            navigator=RegionalNavigator(rpc)
+            target=geo(6500,9000) if not terminal else geo(1500,0)
+            self.assertEqual(navigator.update(sample,target,retain_coast=retain,terminal=terminal),target)
+            self.assertNotIn('regional_handoff',sample)
+            await navigator.close()
+
+    async def test_failed_and_empty_renewal_hold_until_a_checked_replacement(self):
+        class Near:
+            def nearest(self,position):return 1000.,geo(0,0)
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        key=[0,0,1];end=geo(800,4000);target=geo(6500,9000)
+        sample=dict(lap=0,leg=0,waypoint=1,position=end,status='sailing',native={},
+            regional_navigation=dict(route_key=key,points=[geo(800,1000),end],index=2,mode='coastal',
+                policy=REGIONAL_POLICY,probe_position=geo(800,0),job='checked'))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=key
+        async def failed():raise RuntimeError('regional_terrain_unavailable')
+        navigator.task=asyncio.create_task(failed())
+        await asyncio.gather(navigator.task,return_exceptions=True)
+        self.assertEqual(navigator.update(sample,target),end)
+        self.assertEqual(sample['regional_planning']['status'],'retrying')
+        self.assertIsNotNone(sample.get('regional_waiting'))
+        for _ in range(10):self.assertEqual(navigator.update(sample,target),end)
+        async def empty():return dict(route_key=key,points=[],index=0,mode='course_retained',
+            policy=REGIONAL_POLICY,probe_position=end,job='empty')
+        navigator.task=asyncio.create_task(empty());await navigator.task
+        self.assertEqual(navigator.update(sample,target),end)
+        self.assertEqual(sample['regional_navigation']['job'],'checked')
+        self.assertIsNotNone(sample.get('regional_waiting'))
+        replacement=geo(800,6000)
+        async def ready():return dict(route_key=key,points=[replacement],index=0,mode='coastal',
+            policy=REGIONAL_POLICY,probe_position=end,job='new')
+        navigator.task=asyncio.create_task(ready());await navigator.task
+        self.assertEqual(navigator.update(sample,target),replacement)
+        self.assertNotIn('regional_waiting',sample)
+        self.assertEqual(sample['status'],'sailing')
         await navigator.close()
 
     async def test_coastal_preference_can_replace_an_active_offshore_detour(self):
