@@ -61,20 +61,23 @@ selecting a local depth-checked goal. The detour can initially increase distance
 to the course target. At its checked endpoint, the caller waits for the next
 checked segment. Longitude wrapping supports the international date line.
 
-Coastal lookahead follows a checked water route to the onward target or a forward
-exit from the regional grid. Its endpoint has an onward route around bays and
-headlands. Ordinary coastal course vertices guide progress; ports and required
-passage points retain their arrival checks.
+Coastal lookahead favours shore only while progressing toward the destination
+port. Its final stretch must approach both the course target and the port.
+The full coastal route may add at most 15% to a shorter checked route to the
+same onward target. Longer scenic detours use the ordinary water route instead.
+Land and shallow water can still require a detour around bays or islands.
+Ports and required passage points retain their arrival checks.
 
 Onward waypoints mark checked segment ends. Straight grid runs are shortened
 when the complete swept corridor passes depth and mapped-land checks. The
-shortened route preserves its exit and coastline preference.
+shortened route preserves its checked exit.
 
 | Policy | Default |
 |---|---|
 | Surface local depth clearance | 1.5 m |
 | Surface hull radius + tracking margin | 3.5 m + 4 m |
 | Coastal preferred distance | 250 m |
+| Maximum extra distance for coastal preference | 15% |
 | Coastal regional buffer / depth | 40 m / 2 m |
 | Arrival radius | 300 m |
 | Arrival target screening | 350 m buffer / 3 m depth |
@@ -114,6 +117,7 @@ search retains the supplied route. Numeric terrain checks remain necessary.
 `RegionalNavigator` accepts an async `rpc(path, body=None, timeout=...)` callback for `/terrain/jobs` and job reads. The optional `before_prepare` callback lets the caller manage its cache. It does not start or stop Gazebo.
 
 Set `retain_coast=True` only for an ordinary shape advance within the same leg.
+Pass the final port as `progress_target` when the local target is a course waypoint.
 When `state['regional_waiting']` is present, the caller holds thrust until a
 checked replacement is ready. Physics and sensor sampling continue during the
 wait. Failed or empty optional renewal cannot replace a checked coastal route

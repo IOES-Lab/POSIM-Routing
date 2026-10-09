@@ -24,7 +24,8 @@ STANDOFF_M = 250.
 MAXIMUM_STANDOFF_M = 800.
 MINIMUM_DEPTH_M = 2.
 REGIONAL_BUFFER_M = 40.
-WAYPOINT_FORMAT = "checked-segment-ends-v1"
+WAYPOINT_FORMAT = "checked-segment-ends-v2-destination-progress"
+MAXIMUM_COASTAL_DETOUR_RATIO = 1.15
 
 
 def sphere(coordinates):
@@ -90,7 +91,7 @@ class CoastIndex:
         return float(travel[i]), points[i].tolist()
 
 
-def coastal_approach(start, target, shore):
+def coastal_approach(start, target, shore, progress_target=None):
     """One bounded step towards distant coast, still progressing on course.
 
     Numeric regional and native swept-hull checks must approve this candidate.
@@ -107,17 +108,24 @@ def coastal_approach(start, target, shore):
     east, north = .65*math.sin(b)+.35*math.sin(a), .65*math.cos(b)+.35*math.cos(a)
     angle = math.degrees(math.atan2(east, north))
     candidate = list(GEO.fwd(*start, angle, min(7500., remaining*.5))[:2])
-    if remaining-GEO.inv(*candidate, *target)[2] < 500:
+    travel = GEO.inv(*start, *candidate)[2]
+    # Scenery is optional: a mostly sideways step cannot spend most of its
+    # travel circling an island while making only a small net gain.
+    if remaining-GEO.inv(*candidate, *target)[2] < max(500., travel/MAXIMUM_COASTAL_DETOUR_RATIO):
         return None
+    if progress_target is not None:
+        if GEO.inv(*start, *progress_target)[2]-GEO.inv(*candidate, *progress_target)[2] < travel/MAXIMUM_COASTAL_DETOUR_RATIO:
+            return None
     return candidate
 
 
-def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
-    """Return a progressive coastal path, or None to retain the maritime course.
+def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, progress_target=None):
+    """Return a coastal or shorter checked water path, or retain the course.
 
-    A bounded weighted A* prefers a 250 m stand-off. It cannot invent land or
-    depth in missing cells, cross a headland, or pull an intermediate waypoint
-    backwards. Close to a course waypoint, exact arrival takes precedence.
+    A checked coast preference may add at most 15 percent to the shortest
+    checked route to the same onward goal. Its final stretch must approach
+    both that goal and the destination. Required land detours remain available
+    through the ordinary planner. Close to a waypoint, exact arrival wins.
     """
     from posim_terrain.terrain import projection
     from .navigation import TerrainField, DetourPlanner
@@ -136,6 +144,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
         return None
     origin = np.array(forward.transform(*start))
     destination = np.array(forward.transform(*target))
+    progress_destination = np.array(forward.transform(*(progress_target or target)))
     remaining = float(np.linalg.norm(destination-origin))
     if remaining < 2000:
         return None
@@ -209,7 +218,8 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
         return None
     expanded = 0
     offsets = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1))
-    for goal in goals:
+    def search(goal, weights):
+        nonlocal expanded
         costs, parents = {start_node: 0.}, {}
         heap = [(math.dist(xy(start_node), xy(goal)), 0., start_node)]
         found = False
@@ -229,18 +239,86 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
                     continue
                 if i and j and (not safe[node[0]+j, node[1]] or not safe[node[0], node[1]+i]):
                     continue
-                edge = math.hypot(i*dx, j*dy)*(penalty[node]+penalty[nxt])/2
+                edge = math.hypot(i*dx, j*dy)*(weights[node]+weights[nxt])/2
                 value = cost+edge
                 if value >= costs.get(nxt, math.inf):
                     continue
                 costs[nxt], parents[nxt] = value, node
                 heapq.heappush(heap, (value+math.dist(xy(nxt), xy(goal)), value, nxt))
         if not found:
-            continue
+            return None, costs
         nodes = [goal]
         while nodes[-1] != start_node:
             nodes.append(parents[nodes[-1]])
         nodes.reverse()
+        return nodes, costs
+
+    def shorten(route, costs, weights, lookahead=None):
+        points, index = [xy(route[0])], 0
+        while index < len(route)-1:
+            chosen = index+1
+            last = min(len(route)-1, index+lookahead) if lookahead else len(route)-1
+            for candidate in range(last, index, -1):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("coastal_planning_budget_exceeded")
+                a, b = xy(route[index]), xy(route[candidate])
+                length = math.dist(a, b)
+                count = max(2, math.ceil(length/min(dx, dy)*3))
+                ix = np.rint(np.linspace(route[index][1], route[candidate][1], count)).astype(int)
+                iy = np.rint(np.linspace(route[index][0], route[candidate][0], count)).astype(int)
+                weighted = length*float(np.mean(weights[iy, ix]))
+                old = costs[route[candidate]]-costs[route[index]]
+                if (safe[iy, ix].all() and weighted <= old*1.08
+                        and validator.segment(a, b)):
+                    chosen = candidate
+                    break
+            points.append(xy(route[chosen]))
+            index = chosen
+        return points
+
+    def route_length(points):
+        return sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+
+    water_fallback = None
+    for goal in goals:
+        try:
+            baseline_nodes, baseline_costs = search(goal, np.ones_like(penalty))
+            baseline = shorten(baseline_nodes, baseline_costs, np.ones_like(penalty)) if baseline_nodes else None
+        except RuntimeError:
+            if water_fallback is not None:
+                return water_fallback
+            raise
+        if baseline_nodes is None:
+            continue
+        baseline[0] = [*origin, 0.]
+        if not all(validator.segment(a, b) for a, b in zip(baseline, baseline[1:])):
+            continue
+        baseline_length = route_length(baseline)
+        if water_fallback is None:
+            # Retain the same checked exit. A separate angular frontier search
+            # can otherwise replace the rejected scenic loop with another loop.
+            segments = [baseline[0]]
+            for a, b in zip(baseline, baseline[1:]):
+                count = max(1, math.ceil(math.dist(a, b)/7500.))
+                segments.extend((np.array(a)+(np.array(b)-np.array(a))*i/count).tolist()
+                                for i in range(1, count+1))
+            if all(validator.segment(a, b, record=True) for a, b in zip(segments, segments[1:])):
+                water_fallback = dict(points=[list(inverse.transform(*p[:2])) for p in segments[1:]],
+                    index=0, mode="detour", planning_seconds=time.monotonic()-started,
+                    search_nodes=expanded, minimum_regional_clearance_m=validator.minimum,
+                    required_depth_m=MINIMUM_DEPTH_M, regional_buffer_m=REGIONAL_BUFFER_M,
+                    shortest_checked_length_m=baseline_length,
+                    coastal_preference_reason="shorter_checked_water_route",
+                    destination_progress_target=list(progress_target or target),
+                    scope="numeric terrain water route; native corridors checked separately")
+        try:
+            nodes, costs = search(goal, penalty)
+        except RuntimeError:
+            if water_fallback is not None:
+                return water_fallback
+            raise
+        if nodes is None:
+            continue
         coastal_nodes = [index for index,node in enumerate(nodes) if coast[node]]
         if not coastal_nodes:
             continue
@@ -258,34 +336,34 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
         onward_nodes = nodes[end+1:]
         endpoint = nodes[end]
         nodes = nodes[:end+1]
-        # Shorten the grid path without erasing its coastal preference. Long
-        # offshore shortcuts across bays have a higher coast-weighted cost.
-        def shorten(route, lookahead=None):
-            points, index = [xy(route[0])], 0
-            while index < len(route)-1:
-                chosen = index+1
-                last = min(len(route)-1, index+lookahead) if lookahead else len(route)-1
-                for candidate in range(last, index, -1):
-                    if time.monotonic() > deadline:
-                        raise RuntimeError("coastal_planning_budget_exceeded")
-                    a, b = xy(route[index]), xy(route[candidate])
-                    length = math.dist(a, b)
-                    count = max(2, math.ceil(length/min(dx, dy)*3))
-                    ix = np.rint(np.linspace(route[index][1], route[candidate][1], count)).astype(int)
-                    iy = np.rint(np.linspace(route[index][0], route[candidate][0], count)).astype(int)
-                    weighted = length*float(np.mean(penalty[iy, ix]))
-                    old = costs[route[candidate]]-costs[route[index]]
-                    if (safe[iy, ix].all() and weighted <= old*1.08
-                            and validator.segment(a, b)):
-                        chosen = candidate
-                        break
-                points.append(xy(route[chosen]))
-                index = chosen
-            return points
-
-        points = shorten(nodes, lookahead=10)
+        try:
+            points = shorten(nodes, costs, penalty, lookahead=10)
+            onward = shorten([endpoint, *onward_nodes], costs, penalty)
+        except RuntimeError:
+            if water_fallback is not None:
+                return water_fallback
+            raise
         points[0] = [*origin, 0.]
-        onward = shorten([endpoint, *onward_nodes])
+        through_length = route_length(points) + route_length(onward)
+        if through_length > baseline_length*MAXIMUM_COASTAL_DETOUR_RATIO:
+            continue
+        # Check the last kilometre, not just a net distance gain. A bay head
+        # can be closer overall while its terminal stretch turns back uphill.
+        tail = points[-1]
+        port_remaining = float(np.linalg.norm(progress_destination-origin))
+        port_progress = port_remaining-float(np.linalg.norm(progress_destination-np.array(tail[:2])))
+        if port_progress < min(1000., port_remaining*.2):
+            continue
+        tail_start = points[-2] if len(points)>1 else points[0]
+        for point in reversed(points[:-1]):
+            tail_start = point
+            if math.dist(point, tail) >= 1000.:
+                break
+        directions = (np.array(tail[:2])-np.array(tail_start[:2]),
+                      np.array(tail[:2])-np.array(points[-2][:2]))
+        if any(float(np.dot(direction, goal_xy-np.array(tail[:2]))) < -1e-6
+               for direction in directions for goal_xy in (destination, progress_destination)):
+            continue
         if sum(math.dist(a, b) for a, b in zip(points, points[1:])) > 40000:
             continue
         if not all(validator.segment(a, b, record=True) for route in (points, onward)
@@ -303,5 +381,10 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None):
                     onward_exit_progress_m=float(progress[goal]),
                     onward_verified=True,
                     waypoint_format=WAYPOINT_FORMAT,
+                    shortest_checked_length_m=baseline_length,
+                    coastal_through_length_m=through_length,
+                    maximum_coastal_detour_ratio=MAXIMUM_COASTAL_DETOUR_RATIO,
+                    destination_progress_target=list(progress_target or target),
+                    progress_to_destination_m=port_progress,
                     scope="numeric terrain coastal preference; native corridors checked separately")
-    return None
+    return water_fallback
