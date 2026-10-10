@@ -63,7 +63,7 @@ checked segment. Longitude wrapping supports the international date line.
 
 Coastal lookahead favours shore only while progressing toward the destination
 port. Its final stretch must approach both the course target and the port.
-The full coastal route may add at most 15% to a shorter checked route to the
+The full coastal route may add at most 30% to a shorter checked route to the
 same onward target. Longer scenic detours use the ordinary water route instead.
 Land and shallow water can still require a detour around bays or islands.
 Ports and required passage points retain their arrival checks.
@@ -77,7 +77,7 @@ shortened route preserves its checked exit.
 | Surface local depth clearance | 1.5 m |
 | Surface hull radius + tracking margin | 3.5 m + 4 m |
 | Coastal preferred distance | 250 m |
-| Maximum extra distance for coastal preference | 15% |
+| Maximum extra distance for coastal preference | 30% |
 | Coastal regional buffer / depth | 40 m / 2 m |
 | Arrival radius | 300 m |
 | Arrival target screening | 350 m buffer / 3 m depth |

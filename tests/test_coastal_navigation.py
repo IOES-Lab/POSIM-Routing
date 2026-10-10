@@ -49,7 +49,7 @@ class CoastalPlanning(unittest.TestCase):
         self.assertEqual(plan['mode'], 'coastal')
         self.assertLess(abs(plan['endpoint_standoff_m']-STANDOFF_M), 200)
         self.assertGreater(plan['progress_to_course_waypoint_m'], 1000)
-        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*1.15)
+        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*1.30)
         self.assert_swept_safe(terrain, start, plan)
 
     def test_close_safe_start_is_not_rejected_by_an_extra_grid_ring(self):
@@ -72,13 +72,15 @@ class CoastalPlanning(unittest.TestCase):
     def test_headland_cannot_be_shortcut(self):
         terrain = grid(headland=True)
         start = geo(800, -4000)
-        # Land avoidance remains mandatory when scenic preference is rejected.
+        # The relaxed coastal preference still requires going around land.
         target = geo(800, 9000)
         plan = coastal_corridor(terrain, SPEC, start, target)
-        self.assertEqual(plan['mode'],'detour')
-        points = np.array([FORWARD.transform(*p) for p in plan['points']])
+        self.assertEqual(plan['mode'],'coastal')
+        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*1.30)
+        through = plan['points']+plan['onward_points']
+        points = np.array([FORWARD.transform(*p) for p in through])
         self.assertGreater(points[:, 0].max(), 1800+REGIONAL_BUFFER_M)
-        self.assert_swept_safe(terrain, start, plan)
+        self.assert_swept_safe(terrain, start, dict(points=through))
 
     def test_closed_bay_requires_an_onward_water_exit(self):
         terrain = grid()
@@ -164,7 +166,12 @@ class CoastalPlanning(unittest.TestCase):
         self.assertEqual(target,geo(0,-90000))
         self.assertIsNone(coastal_approach(geo(800,0),target,geo(0,0)))
         self.assertIsNone(coastal_approach(geo(30000,0),geo(90000,0),geo(0,0)))
-        self.assertIsNone(coastal_approach(start,target,geo(0,-12000)))
+        relaxed=coastal_approach(start,target,geo(0,-12000))
+        self.assertIsNotNone(relaxed)
+        travel=distance(start,relaxed)
+        progress=distance(start,target)-distance(relaxed,target)
+        self.assertGreaterEqual(progress,travel/1.30)
+        self.assertLess(progress,travel/1.15)
         self.assertIsNone(coastal_approach(start,target,shore,progress_target=geo(90000,0)))
 
     def test_real_progressive_shore_excludes_backward_coast(self):

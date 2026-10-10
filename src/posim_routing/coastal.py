@@ -25,7 +25,7 @@ MAXIMUM_STANDOFF_M = 800.
 MINIMUM_DEPTH_M = 2.
 REGIONAL_BUFFER_M = 40.
 WAYPOINT_FORMAT = "checked-segment-ends-v2-destination-progress"
-MAXIMUM_COASTAL_DETOUR_RATIO = 1.15
+MAXIMUM_COASTAL_DETOUR_RATIO = 1.30
 
 
 def sphere(coordinates):
@@ -122,7 +122,7 @@ def coastal_approach(start, target, shore, progress_target=None):
 def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, progress_target=None):
     """Return a coastal or shorter checked water path, or retain the course.
 
-    A checked coast preference may add at most 15 percent to the shortest
+    A checked coast preference may add at most 30 percent to the shortest
     checked route to the same onward goal. Its final stretch must approach
     both that goal and the destination. Required land detours remain available
     through the ordinary planner. Close to a waypoint, exact arrival wins.
