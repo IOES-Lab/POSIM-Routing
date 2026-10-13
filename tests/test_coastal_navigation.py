@@ -399,6 +399,44 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('regional_waiting',sample)
         await navigator.close()
 
+    async def test_outward_tail_does_not_relabel_retained_forward_runway(self):
+        key=[0,0,1];start,first,end,exit_point=geo(800,1000),geo(800,2000),geo(800,3000),geo(1000,3000)
+        navigator=RegionalNavigator(None);navigator.key=key
+        sample=dict(lap=0,leg=0,waypoint=1,position=start,native={},
+            regional_navigation=dict(points=[first,end],index=0,mode='coastal',route_key=key,
+                policy=REGIONAL_POLICY,job='runway',probe_position=geo(800,0)))
+        async def result():return dict(points=[exit_point],index=0,mode='shallow_exit',route_key=key,
+            policy=REGIONAL_POLICY,job='exit',probe_position=end,
+            continuation_of=dict(job='runway',endpoint=end))
+        navigator.task=asyncio.create_task(result());await navigator.task
+        self.assertEqual(navigator.update(sample,geo(800,90000)),first)
+        plan=sample['regional_navigation']
+        self.assertEqual(plan['mode'],'coastal');self.assertEqual(plan['shallow_exit_start_index'],2)
+        sample['position']=first
+        self.assertEqual(navigator.active_point(sample,key),end)
+        sample['position']=geo(800,2950)
+        self.assertEqual(navigator.active_point(sample,key),end)
+        self.assertEqual(plan['mode'],'coastal')
+        sample['position']=end
+        self.assertEqual(navigator.active_point(sample,key),exit_point)
+        self.assertEqual(plan['mode'],'shallow_exit');self.assertEqual(plan['index'],2)
+        await navigator.close()
+
+    async def test_saved_exit_with_retained_points_migrates_only_its_phase(self):
+        key=[0,0,1];first,end,exit_point=geo(800,2000),geo(800,3000),geo(1000,3000)
+        plan=dict(points=[first,end,exit_point],index=0,mode='shallow_exit',route_key=key,
+            policy=REGIONAL_POLICY,job='saved',probe_position=geo(800,0),retained_checked_points=2)
+        sample=dict(position=geo(800,1000),native={},regional_navigation=plan)
+        navigator=RegionalNavigator(None)
+        self.assertEqual(navigator.active_point(sample,key),first)
+        self.assertEqual(plan['mode'],'coastal');self.assertEqual(plan['points'],[first,end,exit_point])
+        sample['position']=first
+        self.assertEqual(navigator.active_point(sample,key),end)
+        sample['position']=end
+        self.assertEqual(navigator.active_point(sample,key),exit_point)
+        self.assertEqual(plan['mode'],'shallow_exit')
+        await navigator.close()
+
     async def test_exhausted_coast_accepts_checked_replacement_water_route(self):
         async def rpc(*args,**kwargs):await asyncio.Event().wait()
         class Near:
