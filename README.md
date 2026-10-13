@@ -61,6 +61,11 @@ selecting a local depth-checked goal. The detour can initially increase distance
 to the course target. At its checked endpoint, the caller waits for the next
 checked segment. Longitude wrapping supports the international date line.
 
+Coastal lookahead treats land and water shallower than 2 m as shoreline boundaries.
+Routes keep a 200 m exclusion around these boundaries. A vessel already inside
+the buffer first follows a hull-checked outward exit with increasing clearance.
+The native resident corridor rechecks the buffer before propulsion is approved.
+
 Coastal lookahead favours shore only while progressing toward the destination
 port. Its final stretch must approach both the course target and the port.
 The full coastal route may add at most 100% to a shorter checked route to the
@@ -80,10 +85,10 @@ Optional renewals keep the current checked coastal runway until a coastal contin
 |---|---|
 | Surface local depth clearance | 1.5 m |
 | Surface hull radius + tracking margin | 3.5 m + 4 m |
-| Coastal preferred distance | 400 m |
-| Maximum coastal-following distance from land | 1.5 km |
+| Coastal preferred distance | 320 m |
+| Maximum regional coastal-following distance from land or shallow water | 1.5 km |
 | Maximum extra distance for coastal preference | 100% (2.0× total length) |
-| Coastal regional buffer / depth | 40 m / 2 m |
+| Shallow-water exclusion buffer / boundary depth | 200 m / 2 m |
 | Arrival radius | 300 m |
 | Arrival target screening | 350 m buffer / 3 m depth |
 
@@ -125,7 +130,8 @@ Set `retain_coast=True` only for an ordinary shape advance within the same leg.
 Pass the final port as `progress_target` when the local target is a course waypoint.
 When `state['regional_waiting']` is present, the caller holds thrust until a
 checked replacement is ready. Physics and sensor sampling continue during the
-wait. Failed or empty optional renewal cannot replace a checked coastal route
+wait. Renewal starts at the checked runway endpoint and retains its remaining
+forward bends. Failed or empty optional renewal cannot replace a checked coastal route
 with an offshore goal. A planning watchdog preserves pending work within its
 budget and consumes completed results before retrying. Planning delays do not
 request a physical retreat.

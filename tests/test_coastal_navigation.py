@@ -60,7 +60,7 @@ class CoastalPlanning(unittest.TestCase):
     def test_small_island_transfers_to_a_progressive_mainland_band(self):
         terrain=grid();x,y=np.meshgrid(terrain['xs'],terrain['ys'])
         terrain['heights']=np.where((x<=0)|((abs(x-5000)<250)&(abs(y)<250)),20.,-15.).tolist()
-        start=geo(5000,-500);target=geo(800,-9000)
+        start=geo(5000,-650);target=geo(800,-9000)
         plan=coastal_corridor(terrain,SPEC,start,target)
         self.assertEqual(plan['mode'],'coastal_transfer')
         self.assertTrue(plan['coastal_transfer_verified'])
@@ -110,26 +110,26 @@ class CoastalPlanning(unittest.TestCase):
         self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*MAXIMUM_COASTAL_DETOUR_RATIO)
         self.assert_swept_safe(terrain, start, plan)
 
-    def test_close_safe_start_is_not_rejected_by_an_extra_grid_ring(self):
+    def test_start_outside_shallow_buffer_has_a_checked_coastal_connection(self):
         terrain = grid()
-        start = geo(250, -4000)
+        start = geo(500, -4000)
         plan = coastal_corridor(terrain, SPEC, start, geo(800, 9000))
         self.assertIsNotNone(plan)
         self.assertLess(plan['endpoint_standoff_m'], STANDOFF_M+100.)
         self.assert_swept_safe(terrain, start, plan)
 
-    def test_400m_preference_moves_checked_route_without_an_offshore_exit(self):
+    def test_80m_closer_preference_keeps_checked_route_and_onward_progress(self):
         from unittest.mock import patch
         terrain = grid()
         start, target = geo(800, -4000), geo(800, 9000)
-        with patch('posim_routing.coastal.STANDOFF_M', 350.):
+        with patch('posim_routing.coastal.STANDOFF_M', 400.):
             before = coastal_corridor(terrain, SPEC, start, target)
         after = coastal_corridor(terrain, SPEC, start, target)
         self.assertEqual(after['mode'], 'coastal')
-        self.assertEqual(after['preferred_standoff_m']-before['preferred_standoff_m'], 50.)
+        self.assertEqual(after['preferred_standoff_m']-before['preferred_standoff_m'], -80.)
         shift = after['endpoint_standoff_m']-before['endpoint_standoff_m']
-        self.assertGreaterEqual(shift, 0.)
-        self.assertLessEqual(shift, 100.)
+        self.assertGreaterEqual(shift, -160.)
+        self.assertLessEqual(shift, 0.)
         self.assertEqual(after['maximum_coastal_distance_m'], 1500.)
         self.assert_coastal_band(terrain, start, after)
         self.assert_swept_safe(terrain, start, after)
@@ -194,7 +194,11 @@ class CoastalPlanning(unittest.TestCase):
         x = np.array(terrain['xs'])
         heights[:, (x > 0) & (x < 1700)] = -1.
         terrain['heights'] = heights.tolist()
-        self.assertIsNone(coastal_corridor(terrain, SPEC, geo(3000, -4000), geo(6500, 9000)))
+        plan=coastal_corridor(terrain, SPEC, geo(3000,-4000),geo(6500,9000))
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan['shallow_water_buffer_m'],200.)
+        self.assert_swept_safe(terrain,geo(3000,-4000),plan)
+        self.assertGreater(FORWARD.transform(*plan['points'][-1])[0],1900.)
         heights[:, (x > 0) & (x < 1700)] = np.nan
         terrain['heights'] = heights.tolist()
         self.assertIsNone(coastal_corridor(terrain, SPEC, geo(3000, -4000), geo(6500, 9000)))
@@ -352,7 +356,7 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(widths,[6000,20000])
         await navigator.close()
 
-    async def test_preference_migration_keeps_checked_runway_during_renewal(self):
+    async def test_larger_shallow_buffer_requires_rechecking_old_runway(self):
         from unittest.mock import patch
         async def rpc(*args,**kwargs):await asyncio.Event().wait()
         class Near:
@@ -362,9 +366,38 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
             regional_navigation=dict(points=[next_point],index=0,mode='coastal',route_key=key,
                 policy='buffered-water-v18-coastal-350m',job='checked',probe_position=start))
         navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=key
-        self.assertEqual(navigator.update(sample,geo(400,90000)),next_point)
-        self.assertNotIn('regional_waiting',sample);self.assertIsNotNone(navigator.task)
+        self.assertEqual(navigator.update(sample,geo(400,90000)),start)
+        self.assertIn('regional_waiting',sample);self.assertIsNotNone(navigator.task)
         await asyncio.sleep(0);await navigator.close()
+
+    async def test_coastal_renewal_is_prepared_from_runway_end(self):
+        from unittest.mock import AsyncMock
+        navigator=RegionalNavigator(None,coastal=True)
+        start,end,new=geo(800,0),geo(800,3000),geo(800,5500)
+        sample=dict(position=start)
+        navigator.prepare=AsyncMock(return_value=dict(points=[new],index=0,mode='coastal'))
+        value=await navigator.prepare_continuation(sample,geo(800,90000),[0,0,1],
+            dict(points=[end],job='runway'))
+        self.assertEqual(navigator.prepare.call_args.args[0]['position'],end)
+        self.assertEqual(sample['position'],start)
+        self.assertEqual(value['continuation_of'],dict(job='runway',endpoint=end))
+
+    async def test_completed_renewal_retains_forward_bends_before_continuation(self):
+        from posim_routing.coastal import WAYPOINT_FORMAT
+        key=[0,0,1];start,first,end,new=geo(800,1000),geo(800,2000),geo(800,3000),geo(800,5500)
+        navigator=RegionalNavigator(None);navigator.key=key
+        sample=dict(lap=0,leg=0,waypoint=1,position=start,native={},
+            regional_navigation=dict(points=[geo(800,0),first,end],index=1,mode='coastal',
+                route_key=key,policy=REGIONAL_POLICY,job='runway',probe_position=geo(800,0)))
+        async def result():return dict(points=[new],index=0,mode='coastal',route_key=key,
+            policy=REGIONAL_POLICY,job='renewal',probe_position=end,onward_verified=True,
+            waypoint_format=WAYPOINT_FORMAT,continuation_of=dict(job='runway',endpoint=end))
+        navigator.task=asyncio.create_task(result());await navigator.task
+        self.assertEqual(navigator.update(sample,geo(800,90000)),first)
+        self.assertEqual(sample['regional_navigation']['points'],[first,end,new])
+        self.assertEqual(sample['regional_navigation']['retained_checked_points'],2)
+        self.assertNotIn('regional_waiting',sample)
+        await navigator.close()
 
     async def test_exhausted_coast_accepts_checked_replacement_water_route(self):
         async def rpc(*args,**kwargs):await asyncio.Event().wait()
