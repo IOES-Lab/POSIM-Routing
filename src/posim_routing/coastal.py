@@ -20,7 +20,7 @@ from scipy.spatial import cKDTree
 
 GEO = Geod(ellps="WGS84")
 COAST_DISCOVERY_M = 80000.
-STANDOFF_M = 250.
+STANDOFF_M = 350.
 MAXIMUM_STANDOFF_M = 600.
 MINIMUM_DEPTH_M = 2.
 REGIONAL_BUFFER_M = 40.
@@ -170,7 +170,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
     safe &= travel <= 18000
     to_target = np.hypot(xx-destination[0], yy-destination[1])
     progress = remaining-to_target
-    coast = safe & (coast_distance >= 200) & (coast_distance <= MAXIMUM_STANDOFF_M)
+    coast = safe & (coast_distance >= STANDOFF_M-50.) & (coast_distance <= MAXIMUM_STANDOFF_M)
     coast &= (travel >= 1000) & (travel <= 15000)
     if not (coast & (progress >= min(1000., remaining*.2))).any():
         return None

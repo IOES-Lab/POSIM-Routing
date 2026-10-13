@@ -80,7 +80,7 @@ Optional renewals keep the current checked coastal runway until a coastal contin
 |---|---|
 | Surface local depth clearance | 1.5 m |
 | Surface hull radius + tracking margin | 3.5 m + 4 m |
-| Coastal preferred distance | 250 m |
+| Coastal preferred distance | 350 m |
 | Maximum coastal-following distance from land | 1.5 km |
 | Maximum extra distance for coastal preference | 100% (2.0× total length) |
 | Coastal regional buffer / depth | 40 m / 2 m |

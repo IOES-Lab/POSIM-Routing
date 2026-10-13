@@ -6,7 +6,7 @@ in native Gazebo. Downloading/planning never pauses the promotional world.
 import asyncio,math,time
 from pyproj import Geod
 GEO=Geod(ellps='WGS84')
-REGIONAL_POLICY='buffered-water-v17-coastal-failsafe'
+REGIONAL_POLICY='buffered-water-v18-coastal-350m'
 REGIONAL_BUFFER_M=40.
 REGIONAL_DEPTH_M=2.
 

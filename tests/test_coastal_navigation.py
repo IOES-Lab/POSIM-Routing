@@ -115,8 +115,24 @@ class CoastalPlanning(unittest.TestCase):
         start = geo(250, -4000)
         plan = coastal_corridor(terrain, SPEC, start, geo(800, 9000))
         self.assertIsNotNone(plan)
-        self.assertLess(plan['endpoint_standoff_m'], 350.)
+        self.assertLess(plan['endpoint_standoff_m'], STANDOFF_M+100.)
         self.assert_swept_safe(terrain, start, plan)
+
+    def test_extra_hundred_metres_moves_preference_without_an_offshore_exit(self):
+        from unittest.mock import patch
+        terrain = grid()
+        start, target = geo(800, -4000), geo(800, 9000)
+        with patch('posim_routing.coastal.STANDOFF_M', 250.):
+            before = coastal_corridor(terrain, SPEC, start, target)
+        after = coastal_corridor(terrain, SPEC, start, target)
+        self.assertEqual(after['mode'], 'coastal')
+        self.assertEqual(after['preferred_standoff_m']-before['preferred_standoff_m'], 100.)
+        shift = after['endpoint_standoff_m']-before['endpoint_standoff_m']
+        self.assertGreaterEqual(shift, 50.)
+        self.assertLessEqual(shift, 150.)
+        self.assertEqual(after['maximum_coastal_distance_m'], 1500.)
+        self.assert_coastal_band(terrain, start, after)
+        self.assert_swept_safe(terrain, start, after)
 
     def test_strict_budget_retains_shorter_water_route(self):
         terrain = grid()
