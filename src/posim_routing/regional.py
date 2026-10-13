@@ -109,11 +109,19 @@ class RegionalNavigator:
             self.discard(state,'regional_clearance_policy_changed')
             return None
         from .course import passed_vertex
+        # Persisted renewals from the previous coordinator may label their
+        # entire retained runway as an exit. Only the appended tail is an exit.
+        if plan.get('mode')=='shallow_exit' and plan.get('retained_checked_points',0):
+            plan.setdefault('shallow_exit_start_index',plan['retained_checked_points'])
+        exit_index=plan.get('shallow_exit_start_index')
         while plan['index']<len(plan['points']):
             index=plan['index'];point=plan['points'][index]
-            reached=distance(state['position'],point)<(5 if plan.get('mode') in ('port_departure','shallow_exit') else 12 if plan.get('mode')=='port_approach' else 80)
+            if exit_index is not None:
+                plan['mode']='shallow_exit' if index>=exit_index else plan.get('retained_mode','coastal')
+            exit_handoff=exit_index is not None and index==exit_index-1
+            reached=distance(state['position'],point)<(5 if exit_handoff or plan.get('mode') in ('port_departure','shallow_exit') else 12 if plan.get('mode')=='port_approach' else 80)
             previous=plan['points'][index-1] if index else plan.get('probe_position')
-            passed=(plan.get('mode') in ('coastal','coastal_transfer','coastal_approach') and previous is not None
+            passed=(not exit_handoff and plan.get('mode') in ('coastal','coastal_transfer','coastal_approach') and previous is not None
                     and index<len(plan['points'])-1 and passed_vertex(previous,point,plan['points'][index+1],
                         state['position'],maximum_offset=200.,minimum_leg=0.,corner_margin=40.))
             if not reached and not passed:break
@@ -237,6 +245,8 @@ class RegionalNavigator:
         renew_coast=renew_coast or (point is not None and nearest is not None
                                     and plan.get('mode')=='coastal'
                                     and (plan.get('policy')!=REGIONAL_POLICY or not plan.get('onward_verified') or plan.get('waypoint_format')!=WAYPOINT_FORMAT))
+        # Finish a known outward tail before asking for another continuation.
+        renew_coast=renew_coast and plan.get('shallow_exit_start_index') is None
         coast_needed=nearest is not None and (self.probed is None or distance(self.probed,state['position'])>=3000)
         prefer_coast=(point is not None and coast_needed and not needed and
                       (state.get('regional_navigation') or {}).get('mode') not in ('coastal','coastal_transfer','coastal_approach'))
@@ -263,6 +273,10 @@ class RegionalNavigator:
                     retained=plan['points'][plan['index']:end+1]
                     value['points']=retained+value['points'];value['index']=0
                     value['retained_checked_points']=len(retained)
+                    if value.get('mode')=='shallow_exit':
+                        value['shallow_exit_start_index']=len(retained)
+                        value['retained_mode']=plan.get('mode','coastal')
+                        value['mode']=value['retained_mode']
                     value['renewed_from']=connection
                     value['probe_position']=list(state['position'])
                     for metric in ('minimum_regional_clearance_m',):
