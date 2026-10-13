@@ -80,7 +80,7 @@ Optional renewals keep the current checked coastal runway until a coastal contin
 |---|---|
 | Surface local depth clearance | 1.5 m |
 | Surface hull radius + tracking margin | 3.5 m + 4 m |
-| Coastal preferred distance | 350 m |
+| Coastal preferred distance | 400 m |
 | Maximum coastal-following distance from land | 1.5 km |
 | Maximum extra distance for coastal preference | 100% (2.0× total length) |
 | Coastal regional buffer / depth | 40 m / 2 m |
@@ -126,12 +126,17 @@ Pass the final port as `progress_target` when the local target is a course waypo
 When `state['regional_waiting']` is present, the caller holds thrust until a
 checked replacement is ready. Physics and sensor sampling continue during the
 wait. Failed or empty optional renewal cannot replace a checked coastal route
-with an offshore goal.
+with an offshore goal. A planning watchdog preserves pending work within its
+budget and consumes completed results before retrying. Planning delays do not
+request a physical retreat.
 
 When the baseline terrain provider is unavailable, regional planning tries a
 smaller region. It uses verified source data and the same depth and land checks.
 
-- Normal region: 20 km × 20 km
+- Near-shore region, within 1.5 km of shore: 6 km × 6 km first
+- Wider region when the fine grid has no checked connection: 20 km × 20 km
+- Ordinary regional coverage: 20 km × 20 km
+- Total background route preparation budget: 660 seconds
 - Source outage retry: 6 km × 6 km
 - Missing data in both regions: hold thrust and retry
 

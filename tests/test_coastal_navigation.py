@@ -118,18 +118,18 @@ class CoastalPlanning(unittest.TestCase):
         self.assertLess(plan['endpoint_standoff_m'], STANDOFF_M+100.)
         self.assert_swept_safe(terrain, start, plan)
 
-    def test_extra_hundred_metres_moves_preference_without_an_offshore_exit(self):
+    def test_400m_preference_moves_checked_route_without_an_offshore_exit(self):
         from unittest.mock import patch
         terrain = grid()
         start, target = geo(800, -4000), geo(800, 9000)
-        with patch('posim_routing.coastal.STANDOFF_M', 250.):
+        with patch('posim_routing.coastal.STANDOFF_M', 350.):
             before = coastal_corridor(terrain, SPEC, start, target)
         after = coastal_corridor(terrain, SPEC, start, target)
         self.assertEqual(after['mode'], 'coastal')
-        self.assertEqual(after['preferred_standoff_m']-before['preferred_standoff_m'], 100.)
+        self.assertEqual(after['preferred_standoff_m']-before['preferred_standoff_m'], 50.)
         shift = after['endpoint_standoff_m']-before['endpoint_standoff_m']
-        self.assertGreaterEqual(shift, 50.)
-        self.assertLessEqual(shift, 150.)
+        self.assertGreaterEqual(shift, 0.)
+        self.assertLessEqual(shift, 100.)
         self.assertEqual(after['maximum_coastal_distance_m'], 1500.)
         self.assert_coastal_band(terrain, start, after)
         self.assert_swept_safe(terrain, start, after)
@@ -297,6 +297,74 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(navigator.recover_wait(sample)['extent_m'],20000.)
         self.assertEqual(navigator.recover_wait(sample)['extent_m'],40000.)
         await navigator.close()
+
+    async def test_wait_watch_preserves_pending_work_until_its_own_deadline(self):
+        from unittest.mock import patch
+        from posim_routing.regional import PLANNING_BUDGET_SECONDS
+        gate=asyncio.Event()
+        async def prepare():await gate.wait();return {'points': [[1,2]]}
+        navigator=RegionalNavigator(None);sample=dict(regional_planning=dict(status='background'))
+        navigator.start_task(prepare());task=navigator.task
+        await asyncio.sleep(0)
+        with patch('posim_routing.regional.time.monotonic',return_value=navigator.task_started+120):
+            self.assertEqual(navigator.recover_wait(sample,preserve_pending=True),dict(pending=True))
+        self.assertIs(navigator.task,task);self.assertFalse(task.cancelled())
+        self.assertNotIn('navigation_failsafe',sample)
+        gate.set();await task
+        self.assertEqual(navigator.recover_wait(sample,preserve_pending=True),dict(pending=True))
+        self.assertEqual(task.result()['points'],[[1,2]])
+        await navigator.close()
+
+    async def test_wait_watch_replaces_work_that_exceeds_total_budget(self):
+        from unittest.mock import patch
+        from posim_routing.regional import PLANNING_BUDGET_SECONDS
+        async def prepare():await asyncio.Event().wait()
+        navigator=RegionalNavigator(None);sample={}
+        navigator.start_task(prepare());task=navigator.task;await asyncio.sleep(0)
+        with patch('posim_routing.regional.time.monotonic',return_value=navigator.task_started+PLANNING_BUDGET_SECONDS+1):
+            value=navigator.recover_wait(sample,preserve_pending=True)
+        await asyncio.gather(task,return_exceptions=True)
+        self.assertTrue(task.cancelled());self.assertEqual(value['attempt'],1)
+        self.assertEqual(value['extent_m'],6000.)
+        await navigator.close()
+
+    async def test_near_shore_uses_fine_grid_first_and_grows_only_once(self):
+        from unittest.mock import patch
+        widths=[]
+        async def rpc(path,body=None,timeout=10):
+            if body:
+                widths.append(body['width_m'])
+                return dict(id='fixture',status='ready',spec=SPEC,manifest=dict(source='fixture'))
+            return grid()
+        navigator=RegionalNavigator(rpc,coastal=True)
+        start=geo(800,0);target=geo(800,90000)
+        checked=dict(points=[geo(800,5000)],index=0,mode='coastal')
+        with patch('posim_routing.coastal.coastal_corridor',return_value=checked):
+            await navigator.prepare(dict(position=start),target,[0,0,1],(800.,geo(0,0)))
+        self.assertEqual(widths,[6000])
+        widths.clear()
+        with patch('posim_routing.coastal.coastal_corridor',return_value=None), \
+             patch('posim_routing.coastal.coastal_approach',return_value=None), \
+             patch('posim_routing.land_guidance.detour',return_value=[]), \
+             patch('posim_routing.regional.corridor',side_effect=RuntimeError('regional_corridor_unavailable')):
+            with self.assertRaisesRegex(RuntimeError,'regional_corridor_unavailable'):
+                await navigator.prepare(dict(position=start),target,[0,0,1],(800.,geo(0,0)))
+        self.assertEqual(widths,[6000,20000])
+        await navigator.close()
+
+    async def test_preference_migration_keeps_checked_runway_during_renewal(self):
+        from unittest.mock import patch
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        class Near:
+            def nearest(self,position):return 400.,geo(0,0)
+        key=[0,0,1];start=geo(400,0);next_point=geo(400,2000)
+        sample=dict(lap=0,leg=0,waypoint=1,position=start,native={},
+            regional_navigation=dict(points=[next_point],index=0,mode='coastal',route_key=key,
+                policy='buffered-water-v18-coastal-350m',job='checked',probe_position=start))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=key
+        self.assertEqual(navigator.update(sample,geo(400,90000)),next_point)
+        self.assertNotIn('regional_waiting',sample);self.assertIsNotNone(navigator.task)
+        await asyncio.sleep(0);await navigator.close()
 
     async def test_exhausted_coast_accepts_checked_replacement_water_route(self):
         async def rpc(*args,**kwargs):await asyncio.Event().wait()

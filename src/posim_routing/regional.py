@@ -6,7 +6,9 @@ in native Gazebo. Downloading/planning never pauses the promotional world.
 import asyncio,math,time
 from pyproj import Geod
 GEO=Geod(ellps='WGS84')
-REGIONAL_POLICY='buffered-water-v18-coastal-350m'
+REGIONAL_POLICY='buffered-water-v19-coastal-400m'
+COMPATIBLE_POLICIES={REGIONAL_POLICY,'buffered-water-v18-coastal-350m'}
+PLANNING_BUDGET_SECONDS=660.
 REGIONAL_BUFFER_M=40.
 REGIONAL_DEPTH_M=2.
 
@@ -61,9 +63,23 @@ class RegionalNavigator:
         self.rpc=rpc;self.task=None;self.key=None;self.retry=0
         self.coastal=coastal;self.coast_index=None;self.index_task=None;self.probed=None
         self.progress=None;self.coastal_target=None
-        self.recovery_extent=None
-    def recover_wait(self,state):
-        """Retry stalled planning at another resolution without issuing movement."""
+        self.recovery_extent=None;self.task_started=None
+    def start_task(self,work):
+        # The controller watchdog must not cancel terrain preparation before
+        # its own bounded provider deadline. One budget includes all retries.
+        self.task_started=time.monotonic()
+        work_task=asyncio.create_task(work)
+        self.task=asyncio.create_task(asyncio.wait_for(work_task,PLANNING_BUDGET_SECONDS))
+        # Cancellation before the wrapper starts must still close its work.
+        self.task.add_done_callback(lambda _: work_task.cancel() if not work_task.done() else None)
+    def recover_wait(self,state,preserve_pending=False):
+        """Retry expired work; keep bounded pending or completed work consumable."""
+        if preserve_pending and self.task is not None:
+            elapsed=time.monotonic()-self.task_started if self.task_started is not None else PLANNING_BUDGET_SECONDS
+            if self.task.done() or elapsed<PLANNING_BUDGET_SECONDS:
+                state.setdefault('regional_planning',{}).update(elapsed_seconds=max(0.,elapsed),
+                    budget_seconds=PLANNING_BUDGET_SECONDS)
+                return dict(pending=True)
         if self.task:self.task.cancel()
         self.task=None;self.retry=0.;self.probed=None;self.progress=None
         previous=state.get('navigation_failsafe') or {}
@@ -88,7 +104,7 @@ class RegionalNavigator:
         if plan.get('mode')=='port_approach' and plan.get('arrival_radius_m')!=ARRIVAL_RADIUS_M:
             self.discard(state,'port_arrival_region_changed')
             return None
-        if plan.get('policy')!=REGIONAL_POLICY:
+        if plan.get('policy') not in COMPATIBLE_POLICIES:
             self.discard(state,'regional_clearance_policy_changed')
             return None
         from .course import passed_vertex
@@ -168,7 +184,7 @@ class RegionalNavigator:
                            and plan.get('mode') in ('coastal','coastal_transfer','coastal_approach'))
             if ((port_handoff or coast_handoff) and old and len(old)==3
                     and old[:2]==key[:2] and old[2]<key[2]
-                    and plan.get('policy')==REGIONAL_POLICY):
+                    and plan.get('policy') in COMPATIBLE_POLICIES):
                 plan['route_key']=list(key);plan.pop('continuation',None)
                 state['regional_handoff']=dict(previous_key=old,route_key=list(key),
                     position=list(state['position']),reason='same_port_course_advance' if port_handoff else 'measured_coastal_shape_advance')
@@ -219,7 +235,7 @@ class RegionalNavigator:
         from .coastal import WAYPOINT_FORMAT
         renew_coast=renew_coast or (point is not None and nearest is not None
                                     and plan.get('mode')=='coastal'
-                                    and (not plan.get('onward_verified') or plan.get('waypoint_format')!=WAYPOINT_FORMAT))
+                                    and (plan.get('policy')!=REGIONAL_POLICY or not plan.get('onward_verified') or plan.get('waypoint_format')!=WAYPOINT_FORMAT))
         coast_needed=nearest is not None and (self.probed is None or distance(self.probed,state['position'])>=3000)
         prefer_coast=(point is not None and coast_needed and not needed and
                       (state.get('regional_navigation') or {}).get('mode') not in ('coastal','coastal_transfer','coastal_approach'))
@@ -236,7 +252,7 @@ class RegionalNavigator:
                 # A failed optional preference must preserve a previously
                 # checked detour while waiting for a better coastal region.
                 coast_plan=(plan.get('route_key')==key and plan.get('mode') in ('coastal','coastal_transfer','coastal_approach')
-                            and plan.get('policy')==REGIONAL_POLICY)
+                            and plan.get('policy') in COMPATIBLE_POLICIES)
                 preserve_empty=(not value['points'] and (point is not None or
                                 (coast_plan and nearest is not None and not terminal and not needed)))
                 # An optional scenic renewal cannot replace a checked coastal
@@ -264,11 +280,11 @@ class RegionalNavigator:
         coast_needed=nearest is not None and (self.probed is None or distance(self.probed,state['position'])>=3000)
         if (prefer_port or needed or coast_needed or renew_coast) and not self.task and time.monotonic()>=self.retry:
             state['regional_planning']=dict(status='background',mode='port_approach' if terminal else 'coastal' if coast_needed else 'detour')
-            self.task=asyncio.create_task(self.prepare_port(state,target,key) if terminal else self.prepare(state,target,key,nearest,needed,extent=self.recovery_extent,progress_target=progress_target,coastal_target=coastal_target))
+            self.start_task(self.prepare_port(state,target,key) if terminal else self.prepare(state,target,key,nearest,needed,extent=self.recovery_extent,progress_target=progress_target,coastal_target=coastal_target))
             self.recovery_extent=None
         if point is not None:return point
         plan=state.get('regional_navigation') or {}
-        if (plan.get('route_key')==key and plan.get('policy')==REGIONAL_POLICY
+        if (plan.get('route_key')==key and plan.get('policy') in COMPATIBLE_POLICIES
                 and (plan.get('mode') in ('coastal','coastal_transfer','coastal_approach') or plan.get('mapped_guidance')) and plan.get('points')
                 and plan['index']>=len(plan['points'])
                 and distance(state['position'],plan['points'][-1])<1500
@@ -305,7 +321,7 @@ class RegionalNavigator:
             self.task=None
             if point is not None:return point
         if self.task is None and time.monotonic()>=self.retry:
-            self.task=asyncio.create_task(self.prepare_departure(state,target,key))
+            self.start_task(self.prepare_departure(state,target,key))
             state['regional_planning']=dict(status='background',mode='port_departure')
         state['regional_waiting']=dict(reason='resident_departure_corridor_pending')
         return state['position']
@@ -412,7 +428,7 @@ class RegionalNavigator:
             except Exception:break
             if (sources.get('baseline_status') or {}).get('status')!='unavailable':break
         raise RuntimeError('regional_terrain_unavailable')
-    async def prepare(self,state,target,key,nearest=None,needed=True,extent=None,progress_target=None,coastal_target=None):
+    async def prepare(self,state,target,key,nearest=None,needed=True,extent=None,progress_target=None,coastal_target=None,fine_checked=False):
         from posim_terrain.canal_override import in_region
         canal=in_region(state['position'])
         if self.coastal and not canal and nearest is None and self.index_task is not None:
@@ -433,7 +449,11 @@ class RegionalNavigator:
             # distant coast. The 1:10M discovery line never supplies depth.
             heading,_,_=GEO.inv(*pos,*nearest[1])
             centre=list(GEO.fwd(*pos,heading,min(6000.,nearest[0]-6000.))[:2])
-        extent=extent or (4000 if canal else 20000)
+        initial_extent=extent is None
+        # Fine coastal triangles first: a 20 km grid can close navigable water
+        # beside a headland and waste an entire provider/planner cycle.
+        extent=extent or (4000 if canal else 6000 if nearest and nearest[0]<1500. else 20000)
+        fine_checked=fine_checked or extent==6000
         if self.before_prepare is not None:await self.before_prepare()
         job=await self.terrain_region(centre,extent)
         grid=await self.rpc('/terrain/jobs/'+job['id']+'/files/terrain.json',timeout=20)
@@ -450,7 +470,7 @@ class RegionalNavigator:
             try:value=await asyncio.to_thread(coastal_corridor,grid,job['spec'],current,coastal_goal,guard=guard,progress_target=progress_target)
             except RuntimeError as error:coast_error=str(error)[:160]
         water_fallback=value if value is not None and value.get('mode')=='detour' else None
-        if nearest and (value is None or water_fallback is not None) and extent>6000 and nearest[0]<1500.:
+        if nearest and not fine_checked and (value is None or water_fallback is not None) and extent>6000 and nearest[0]<1500.:
             # A coarse buffered pixel can disconnect otherwise navigable coastal
             # water. Resolve the current shoreline before accepting a water exit.
             return await self.prepare(state,course_target,key,nearest,needed,extent=6000,
@@ -506,8 +526,11 @@ class RegionalNavigator:
                     # Coarse regional pixels can close a harbour entrance.
                     # Resolve it on a smaller real terrain grid before retrying;
                     # never substitute an arbitrary offshore frontier.
-                    if not canal and extent>6000 and str(error).startswith('regional_corridor_unavailable'):
+                    if not canal and not fine_checked and extent>6000 and str(error).startswith('regional_corridor_unavailable'):
                         return await self.prepare(state,course_target,key,nearest,needed,extent=6000,progress_target=progress_target,coastal_target=coastal_target)
+                    if not canal and initial_extent and extent==6000:
+                        return await self.prepare(state,course_target,key,nearest,needed,extent=20000,
+                            progress_target=progress_target,coastal_target=coastal_target,fine_checked=True)
                     raise
                 if value['points']:value['mode']='detour'
         if canal and value['points']:value.update(mode='canal',assumed_depth_m=10,measured_bathymetry=False)
