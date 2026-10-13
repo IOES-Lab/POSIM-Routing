@@ -21,11 +21,12 @@ from scipy.spatial import cKDTree
 GEO = Geod(ellps="WGS84")
 COAST_DISCOVERY_M = 80000.
 STANDOFF_M = 250.
-MAXIMUM_STANDOFF_M = 800.
+MAXIMUM_STANDOFF_M = 600.
 MINIMUM_DEPTH_M = 2.
 REGIONAL_BUFFER_M = 40.
-WAYPOINT_FORMAT = "checked-segment-ends-v2-destination-progress"
-MAXIMUM_COASTAL_DETOUR_RATIO = 1.30
+WAYPOINT_FORMAT = "checked-segment-ends-v5-coastal-transfer"
+MAXIMUM_COASTAL_DETOUR_RATIO = 2.0
+MAXIMUM_COASTAL_DISTANCE_M = 1500.
 
 
 def sphere(coordinates):
@@ -101,7 +102,7 @@ def coastal_approach(start, target, shore, progress_target=None):
     if remaining < 2000:
         return None
     bearing, _, separation = GEO.inv(*start, *shore)
-    if separation <= 2500:
+    if separation <= MAXIMUM_COASTAL_DISTANCE_M:
         return None
     # Add a forward component so sidewards approach does not undo progress.
     a, b = math.radians(heading), math.radians(bearing)
@@ -122,9 +123,10 @@ def coastal_approach(start, target, shore, progress_target=None):
 def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, progress_target=None):
     """Return a coastal or shorter checked water path, or retain the course.
 
-    A checked coast preference may add at most 30 percent to the shortest
+    A checked coast preference may double the length of the shortest
     checked route to the same onward goal. Its final stretch must approach
-    both that goal and the destination. Required land detours remain available
+    both that goal and the destination. After joining shore, consumed coastal
+    segments stay within 1.5 km. Required land detours remain available
     through the ordinary planner. Close to a waypoint, exact arrival wins.
     """
     from posim_terrain.terrain import projection
@@ -161,6 +163,8 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
     if guard is not None:
         safe &= guard.grid(xs, ys, margin)
     coast_distance = distance_transform_edt(~land, sampling=(dy, dx))
+    # Reserve a full cell diagonal for shoreline and segment sampling error.
+    shore_limit = MAXIMUM_COASTAL_DISTANCE_M - math.hypot(dx, dy)
     xx, yy = np.meshgrid(xs, ys)
     travel = np.hypot(xx-origin[0], yy-origin[1])
     safe &= travel <= 18000
@@ -198,6 +202,25 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
             break
         goals.append(node)
         scores[np.hypot(xx-xs[node[1]], yy-ys[node[0]]) < 600] = math.inf
+    # Once the vessel has joined the shore, search the connected coastal
+    # band itself. Soft weights can otherwise choose an offshore exit first,
+    # leaving no coastal prefix long enough to consume around a headland.
+    band_safe = safe & (coast_distance <= shore_limit)
+    band_components, _ = label(band_safe)
+    band_reachable = band_components == band_components[start_node] if band_safe[start_node] else np.zeros_like(safe)
+    port_progress_grid = np.linalg.norm(progress_destination-origin)-np.hypot(xx-progress_destination[0],yy-progress_destination[1])
+    forward_coast = coast & (progress >= min(1000., remaining*.2)) & (port_progress_grid >= 1000.)
+    transfer_required = bool(band_safe[start_node] and not (forward_coast & band_reachable).any())
+    band_goals = []
+    if band_safe[start_node] and not transfer_required and not target_inside:
+        band_exits = exits & coast & band_reachable
+        band_scores = np.where(band_exits, to_target, math.inf)
+        for _ in range(4):
+            node = tuple(map(int, np.unravel_index(np.argmin(band_scores), band_scores.shape)))
+            if not math.isfinite(float(band_scores[node])):break
+            band_goals.append(node)
+            band_scores[np.hypot(xx-xs[node[1]], yy-ys[node[0]]) < 600] = math.inf
+        goals = band_goals + [goal for goal in goals if goal not in band_goals]
     penalty = (1 + np.minimum(1,np.abs(coast_distance-STANDOFF_M)/STANDOFF_M)
                + 8*np.minimum(6,np.maximum(0,coast_distance-(STANDOFF_M+150))/500))
     checked = CachedTerrain(field)
@@ -218,8 +241,9 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
         return None
     expanded = 0
     offsets = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1))
-    def search(goal, weights):
+    def search(goal, weights, allowed=None):
         nonlocal expanded
+        domain = safe if allowed is None else allowed
         costs, parents = {start_node: 0.}, {}
         heap = [(math.dist(xy(start_node), xy(goal)), 0., start_node)]
         found = False
@@ -235,9 +259,9 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
                 break
             for j, i in offsets:
                 nxt = (node[0]+j, node[1]+i)
-                if not (0 <= nxt[0] < len(ys) and 0 <= nxt[1] < len(xs)) or not safe[nxt]:
+                if not (0 <= nxt[0] < len(ys) and 0 <= nxt[1] < len(xs)) or not domain[nxt]:
                     continue
-                if i and j and (not safe[node[0]+j, node[1]] or not safe[node[0], node[1]+i]):
+                if i and j and (not domain[node[0]+j, node[1]] or not domain[node[0], node[1]+i]):
                     continue
                 edge = math.hypot(i*dx, j*dy)*(weights[node]+weights[nxt])/2
                 value = cost+edge
@@ -253,7 +277,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
         nodes.reverse()
         return nodes, costs
 
-    def shorten(route, costs, weights, lookahead=None):
+    def shorten(route, costs, weights, lookahead=None, shore_bound=False):
         points, index = [xy(route[0])], 0
         while index < len(route)-1:
             chosen = index+1
@@ -268,7 +292,9 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
                 iy = np.rint(np.linspace(route[index][0], route[candidate][0], count)).astype(int)
                 weighted = length*float(np.mean(weights[iy, ix]))
                 old = costs[route[candidate]]-costs[route[index]]
-                if (safe[iy, ix].all() and weighted <= old*1.08
+                if (safe[iy, ix].all()
+                        and (not shore_bound or (coast_distance[iy, ix] <= shore_limit).all())
+                        and weighted <= old*1.08
                         and validator.segment(a, b)):
                     chosen = candidate
                     break
@@ -312,7 +338,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
                     destination_progress_target=list(progress_target or target),
                     scope="numeric terrain water route; native corridors checked separately")
         try:
-            nodes, costs = search(goal, penalty)
+            nodes, costs = search(goal, penalty, allowed=band_safe if goal in band_goals else None)
         except RuntimeError:
             if water_fallback is not None:
                 return water_fallback
@@ -329,16 +355,40 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
             continue
         if not all(validator.segment(a,b,record=True) for a,b in zip(through,through[1:])):
             continue
+        # Once joined, retain only the continuous coastal band. The full
+        # onward route proves this is not a closed bay, but an offshore exit
+        # is not a waypoint to consume while following the coast.
+        if transfer_required:
+            # A rock/island can have a small closed shore band. Join a later
+            # progressive coast on the complete checked route instead of
+            # repeatedly rejecting the necessary water crossing between them.
+            forward_nodes = [index for index in coastal_nodes if forward_coast[nodes[index]]]
+            if not forward_nodes:continue
+            component = band_components[nodes[forward_nodes[0]]]
+            entry = next(index for index, node in enumerate(nodes)
+                         if band_components[node] == component)
+        else:
+            entry = next(index for index, node in enumerate(nodes)
+                         if coast_distance[node] <= shore_limit)
+        follow_end = entry
+        for index in range(entry+1, len(nodes)):
+            if coast_distance[nodes[index]] > shore_limit:
+                break
+            follow_end = index
+        coastal_nodes = [index for index in coastal_nodes if entry <= index <= follow_end]
+        if not coastal_nodes:
+            continue
         bands = {index: math.floor(abs(coast_distance[nodes[index]]-STANDOFF_M)/max(dx,dy))
                  for index in coastal_nodes}
         closest_band = min(bands.values())
         end = max(index for index in coastal_nodes if bands[index]==closest_band)
-        onward_nodes = nodes[end+1:]
         endpoint = nodes[end]
-        nodes = nodes[:end+1]
         try:
-            points = shorten(nodes, costs, penalty, lookahead=10)
-            onward = shorten([endpoint, *onward_nodes], costs, penalty)
+            approach = shorten(nodes[:entry+1], costs, penalty, lookahead=10)
+            following = shorten(nodes[entry:end+1], costs, penalty, lookahead=10, shore_bound=True)
+            points = approach[:-1] + following
+            onward = shorten(nodes[end:], costs, penalty)
+            coastal_onward = shorten(nodes[end:follow_end+1], costs, penalty, shore_bound=True)
         except RuntimeError:
             if water_fallback is not None:
                 return water_fallback
@@ -366,17 +416,24 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
             continue
         if sum(math.dist(a, b) for a, b in zip(points, points[1:])) > 40000:
             continue
-        if not all(validator.segment(a, b, record=True) for route in (points, onward)
+        if not all(validator.segment(a, b, record=True) for route in (points, onward, coastal_onward)
                    for a, b in zip(route, route[1:])):
             continue
         return dict(points=[list(inverse.transform(*point[:2])) for point in points[1:]],
-                    index=0, mode="coastal", planning_seconds=time.monotonic()-started,
+                    index=0, mode="coastal_transfer" if transfer_required else "coastal", planning_seconds=time.monotonic()-started,
                     search_nodes=expanded, minimum_regional_clearance_m=validator.minimum,
                     preferred_standoff_m=STANDOFF_M,
                     endpoint_standoff_m=float(coast_distance[endpoint]),
                     maximum_preferred_standoff_m=MAXIMUM_STANDOFF_M,
                     progress_to_course_waypoint_m=float(progress[endpoint]),
-                    onward_points=[list(inverse.transform(*point[:2])) for point in onward[1:]],
+                    onward_points=[list(inverse.transform(*point[:2])) for point in coastal_onward[1:]],
+                    maximum_coastal_distance_m=MAXIMUM_COASTAL_DISTANCE_M,
+                    coastal_band_entry=list(inverse.transform(*xy(nodes[entry])[:2])),
+                    coastal_band_reference=list(inverse.transform(*xy(nodes[entry])[:2])) if transfer_required else None,
+                    coastal_transfer_verified=transfer_required,
+                    coastal_band_grid_margin_m=math.hypot(dx, dy),
+                    maximum_following_standoff_m=max(float(coast_distance[node])
+                                                   for node in nodes[entry:follow_end+1]),
                     onward_exit=list(inverse.transform(*xy(goal)[:2])),
                     onward_exit_progress_m=float(progress[goal]),
                     onward_verified=True,

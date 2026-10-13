@@ -125,10 +125,15 @@ class DetourPlanner:
             for dx,dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
                 nxt=(node[0]+dx,node[1]+dy)
                 if nxt in closed or not free(nxt):continue
-                if dx and dy and (not free((node[0]+dx,node[1])) or not free((node[0],node[1]+dy))):continue
+                edge=getattr(self,'search_edge',None)
+                corner_blocked=dx and dy and (not free((node[0]+dx,node[1])) or not free((node[0],node[1]+dy)))
+                # Fine harbour searches can approve an exact diagonal swept
+                # corridor even when its off-path cardinal neighbours are land.
+                if corner_blocked and edge is None:continue
                 if node==(0,0) and not self.segment(start,position(nxt)):continue
                 ng=g+step*math.hypot(dx,dy)
                 if ng>=cost.get(nxt,math.inf):continue
+                if edge is not None and not edge(p,position(nxt)):continue
                 cost[nxt]=ng;parent[nxt]=node
                 heapq.heappush(heap,(ng+math.dist(position(nxt)[:2],goal[:2]),ng,nxt))
         if found is None:raise RuntimeError('route_no_safe_detour')

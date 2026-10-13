@@ -8,6 +8,12 @@ ARRIVAL_RADIUS_M = 300.
 APPROACH_DISTANCE_M = 5000.
 
 
+def terminal_approach(leg, target, position):
+    """Use port terrain rules when a rounded course target is the arrival."""
+    from .regional import distance
+    return target == leg['coordinates'][-1] and distance(position, target) < APPROACH_DISTANCE_M
+
+
 class ArrivalOutsideResidentTerrain(RuntimeError):
     """The vessel must advance before its arrival area is resident."""
 
@@ -21,7 +27,7 @@ def forward_frame(spec):
 def bend_lookahead(native, regional, seed_spec):
     """Include the next regional bend even when the local corridor ends before it."""
     points=native.get('waypoints',[])
-    if regional.get('mode')!='port_approach':return points
+    if regional.get('mode') not in ('port_approach','port_departure'):return points
     spec=(native.get('origin') or {}).get('spec') or seed_spec
     forward=forward_frame(json.dumps(spec,sort_keys=True))
     upcoming=[[*forward.transform(*p),0.] for p in regional['points'][regional['index']:regional['index']+3]]
@@ -58,7 +64,7 @@ def shortest_arrival(planner, field, origin, candidates):
     return best, best_floor
 
 
-def corridor(tiles, spec, start, target, guard=None):
+def corridor(tiles, spec, start, target, guard=None, arrival=True):
     from posim_terrain.terrain import projection
     from .navigation import TerrainField, DetourPlanner
     from .planning import CachedTerrain
@@ -76,15 +82,19 @@ def corridor(tiles, spec, start, target, guard=None):
     heading=math.atan2(origin[1]-centre[1],origin[0]-centre[0])
     candidates=[[*[centre[i]+250.*fn(heading+offset*math.pi/8) for i,fn in enumerate((math.cos,math.sin))],0.]
                 for offset in (0,1,-1,2,-2,3,-3,4,-4,6,-6,8)] + [centre]
-    path, floor = shortest_arrival(planner, field, origin, candidates)
+    if arrival:path,floor=shortest_arrival(planner,field,origin,candidates)
+    else:
+        # Transit exit points use the resident swept-hull rule. The 3 m /
+        # 25 m arrival-area screen belongs to the final port endpoint.
+        path=planner.route(origin,centre);floor=field.maximum(*centre[:2],planner.radius)
     if not all(planner.segment(a, b, record=True)
                for a, b in zip([origin]+path[:-1], path)):
         raise RuntimeError('port_corridor_not_continuously_safe')
     return dict(points=[list(inverse.transform(*p[:2])) for p in path], index=0,
                 mode='port_approach', minimum_regional_clearance_m=planner.minimum,
                 required_depth_m=planner.clearance, regional_buffer_m=planner.radius,
-                endpoint_buffer_m=25., endpoint_minimum_depth_m=-floor,
-                arrival_radius_m=ARRIVAL_RADIUS_M,arrival_centre=list(target),
+                endpoint_buffer_m=25. if arrival else planner.radius, endpoint_minimum_depth_m=-floor,
+                arrival_radius_m=ARRIVAL_RADIUS_M if arrival else 5.,arrival_centre=list(target),
                 scope='resident Gazebo collision field; every native command rechecked')
 
 

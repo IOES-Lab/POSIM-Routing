@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-from posim_routing.coastal import CoastIndex, coastal_corridor, coastal_approach, MINIMUM_DEPTH_M, REGIONAL_BUFFER_M, STANDOFF_M
+from posim_routing.coastal import CoastIndex, coastal_corridor, coastal_approach, MINIMUM_DEPTH_M, REGIONAL_BUFFER_M, STANDOFF_M, MAXIMUM_COASTAL_DETOUR_RATIO, MAXIMUM_COASTAL_DISTANCE_M
 from posim_routing.navigation import TerrainField, DetourPlanner
 from posim_routing.planning import CachedTerrain
 from posim_routing.regional import RegionalNavigator,REGIONAL_POLICY,distance,corridor
@@ -41,6 +41,64 @@ class CoastalPlanning(unittest.TestCase):
         points = [origin] + [[*FORWARD.transform(*p), 0.] for p in plan['points']]
         self.assertTrue(all(validator.segment(a, b) for a, b in zip(points, points[1:])))
 
+    def assert_coastal_band(self, terrain, start, plan):
+        from scipy.spatial import cKDTree
+        x, y = np.meshgrid(terrain['xs'], terrain['ys'])
+        land = np.asarray(terrain['heights']) >= 0
+        shore = cKDTree(np.column_stack((x[land], y[land])))
+        points = [FORWARD.transform(*start)] + [FORWARD.transform(*p)
+                  for p in plan['points'] + plan['onward_points']]
+        if shore.query(points[0])[0] > MAXIMUM_COASTAL_DISTANCE_M:
+            entry = np.array(FORWARD.transform(*plan['coastal_band_entry']))
+            joined = next(i for i, point in enumerate(points) if np.linalg.norm(np.array(point)-entry) < 1.)
+            points = points[joined:]
+        samples = np.concatenate([np.linspace(a, b, max(2, int(np.linalg.norm(np.array(b)-a)/10)+1))
+                                  for a, b in zip(points, points[1:])])
+        self.assertLessEqual(float(shore.query(samples)[0].max()), MAXIMUM_COASTAL_DISTANCE_M)
+        self.assertEqual(plan['maximum_coastal_distance_m'], 1500.)
+
+    def test_small_island_transfers_to_a_progressive_mainland_band(self):
+        terrain=grid();x,y=np.meshgrid(terrain['xs'],terrain['ys'])
+        terrain['heights']=np.where((x<=0)|((abs(x-5000)<250)&(abs(y)<250)),20.,-15.).tolist()
+        start=geo(5000,-500);target=geo(800,-9000)
+        plan=coastal_corridor(terrain,SPEC,start,target)
+        self.assertEqual(plan['mode'],'coastal_transfer')
+        self.assertTrue(plan['coastal_transfer_verified'])
+        entry_x,_=FORWARD.transform(*plan['coastal_band_entry'])
+        self.assertLess(entry_x,1500.)
+        self.assertEqual(plan['coastal_band_reference'],plan['coastal_band_entry'])
+        self.assert_swept_safe(terrain,start,plan)
+        self.assertLessEqual(plan['coastal_through_length_m'],2*plan['shortest_checked_length_m'])
+
+    def test_simplified_coastal_segments_and_onward_runway_stay_in_band(self):
+        for terrain in (grid(), grid(headland=True)):
+            start = geo(800, -4000)
+            plan = coastal_corridor(terrain, SPEC, start, geo(800, 9000))
+            self.assertEqual(plan['mode'], 'coastal')
+            self.assert_coastal_band(terrain, start, plan)
+
+    def test_doubled_detour_budget_can_join_previously_rejected_coast(self):
+        start, target = geo(5000, -4000), geo(6500, 9000)
+        plan = coastal_corridor(grid(), SPEC, start, target)
+        self.assertEqual(plan['mode'], 'coastal')
+        self.assertGreater(plan['coastal_through_length_m']/plan['shortest_checked_length_m'], 1.5)
+        self.assertLessEqual(plan['coastal_through_length_m']/plan['shortest_checked_length_m'], 2.)
+        self.assert_coastal_band(grid(), start, plan)
+
+    def test_safe_backward_frontier_is_rejected(self):
+        axis=np.linspace(-10000,10000,257)
+        x,y=np.meshgrid(axis,axis)
+        terrain=dict(xs=axis,ys=axis,heights=np.where(y>300.,-1.,-15.))
+        # Only goals facing away from the shallow northern target are safe.
+        with self.assertRaisesRegex(RuntimeError,'regional_corridor_unavailable'):
+            corridor(terrain,SPEC,geo(0,0),geo(0,1000))
+
+    def test_forward_corridor_keeps_goal_progress(self):
+        start,target=geo(3000,-4000),geo(3000,5000)
+        plan=corridor(grid(),SPEC,start,target)
+        self.assertGreater(distance(start,target)-distance(plan['points'][-1],target),7000.)
+        self.assert_swept_safe(grid(),start,plan)
+
     def test_stays_near_coast_and_progresses(self):
         terrain = grid()
         start, target = geo(800, -4000), geo(800, 9000)
@@ -49,7 +107,7 @@ class CoastalPlanning(unittest.TestCase):
         self.assertEqual(plan['mode'], 'coastal')
         self.assertLess(abs(plan['endpoint_standoff_m']-STANDOFF_M), 200)
         self.assertGreater(plan['progress_to_course_waypoint_m'], 1000)
-        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*1.30)
+        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*MAXIMUM_COASTAL_DETOUR_RATIO)
         self.assert_swept_safe(terrain, start, plan)
 
     def test_close_safe_start_is_not_rejected_by_an_extra_grid_ring(self):
@@ -60,10 +118,12 @@ class CoastalPlanning(unittest.TestCase):
         self.assertLess(plan['endpoint_standoff_m'], 350.)
         self.assert_swept_safe(terrain, start, plan)
 
-    def test_offshore_start_does_not_take_a_scenic_detour(self):
+    def test_strict_budget_retains_shorter_water_route(self):
         terrain = grid()
         start, target = geo(5000, -4000), geo(6500, 9000)
-        plan = coastal_corridor(terrain, SPEC, start, target)
+        from unittest.mock import patch
+        with patch('posim_routing.coastal.MAXIMUM_COASTAL_DETOUR_RATIO', 1.5):
+            plan = coastal_corridor(terrain, SPEC, start, target)
         self.assertEqual(plan['mode'],'detour')
         self.assertEqual(plan['coastal_preference_reason'],'shorter_checked_water_route')
         self.assertGreater(distance(start,target)-distance(plan['points'][-1],target), 7000.)
@@ -76,7 +136,7 @@ class CoastalPlanning(unittest.TestCase):
         target = geo(800, 9000)
         plan = coastal_corridor(terrain, SPEC, start, target)
         self.assertEqual(plan['mode'],'coastal')
-        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*1.30)
+        self.assertLessEqual(plan['coastal_through_length_m'], plan['shortest_checked_length_m']*MAXIMUM_COASTAL_DETOUR_RATIO)
         through = plan['points']+plan['onward_points']
         points = np.array([FORWARD.transform(*p) for p in through])
         self.assertGreater(points[:, 0].max(), 1800+REGIONAL_BUFFER_M)
@@ -90,7 +150,9 @@ class CoastalPlanning(unittest.TestCase):
         terrain['heights'] = np.where(land,20.,-15.).tolist()
         start,target = geo(1000,2000),geo(-20000,-20000)
         plan = coastal_corridor(terrain,SPEC,start,target)
-        self.assertEqual(plan['mode'],'detour')
+        self.assertEqual(plan['mode'],'coastal')
+        self.assert_coastal_band(terrain, start, plan)
+        self.assertLessEqual(plan['coastal_through_length_m'], 2*plan['shortest_checked_length_m'])
         end_x,end_y = FORWARD.transform(*plan['points'][-1])
         self.assertGreater(end_x,5000)
         self.assertLess(end_y,-1000)
@@ -104,9 +166,10 @@ class CoastalPlanning(unittest.TestCase):
         plan = coastal_corridor(terrain, SPEC, start, geo(6500, 9000))
         self.assertIsNotNone(plan)
         self.assertGreater(distance(plan['points'][-1], plan['onward_exit']), 5000.)
+        self.assertTrue(plan['onward_verified'])
         self.assertGreater(len(plan['onward_points']), 0)
-        self.assertLessEqual(len(plan['onward_points']), 4)
-        np.testing.assert_allclose(plan['onward_points'][-1], plan['onward_exit'], atol=1e-10)
+        self.assertGreater(distance(plan['onward_points'][-1], plan['onward_exit']), 3000.)
+        self.assert_coastal_band(terrain, start, plan)
         self.assert_swept_safe(terrain, start, dict(points=plan['points']+plan['onward_points']))
 
     def test_shallow_and_unknown_coast_is_not_a_destination(self):
@@ -170,7 +233,7 @@ class CoastalPlanning(unittest.TestCase):
         self.assertIsNotNone(relaxed)
         travel=distance(start,relaxed)
         progress=distance(start,target)-distance(relaxed,target)
-        self.assertGreaterEqual(progress,travel/1.30)
+        self.assertGreaterEqual(progress,travel/MAXIMUM_COASTAL_DETOUR_RATIO)
         self.assertLess(progress,travel/1.15)
         self.assertIsNone(coastal_approach(start,target,shore,progress_target=geo(90000,0)))
 
@@ -184,6 +247,58 @@ class CoastalPlanning(unittest.TestCase):
 
 
 class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
+    async def test_checked_coast_renews_even_when_global_ray_is_on_land(self):
+        from unittest.mock import patch
+        async def rpc(path,body=None,timeout=10):
+            if path.endswith('/terrain.json'):return grid()
+            return dict(id='fixture',status='ready',spec=SPEC,manifest=dict(source='fixture'))
+        navigator=RegionalNavigator(rpc,coastal=True)
+        sample=dict(position=geo(800,0))
+        checked=dict(points=[geo(800,5000)],index=0,mode='coastal',onward_verified=True)
+        with patch('posim_routing.coastal.coastal_corridor',return_value=checked), \
+             patch('posim_routing.land_guidance.horizon_target',side_effect=RuntimeError('mapped_guidance_horizon_blocked')) as horizon:
+            plan=await navigator.prepare(sample,geo(-8000,90000),[0,0,1],(800.,geo(0,0)),True)
+        self.assertEqual(plan['mode'],'coastal');horizon.assert_not_called()
+        await navigator.close()
+
+    async def test_wait_failsafe_cancels_stale_work_and_changes_resolution_without_moving(self):
+        from unittest.mock import patch
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        class Near:
+            def nearest(self,position):return 800.,geo(0,0)
+        key=[0,0,1];position=geo(800,3000)
+        sample=dict(lap=0,leg=0,waypoint=1,position=position,native=dict(navigation=dict(route_key=key)),
+            regional_navigation=dict(points=[position],index=1,route_key=key,mode='coastal',
+                policy=REGIONAL_POLICY,job='checked',probe_position=geo(800,0)))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=key
+        navigator.task=asyncio.create_task(rpc());old=navigator.task
+        self.assertEqual(navigator.recover_wait(sample)['extent_m'],6000.)
+        await asyncio.gather(old,return_exceptions=True)
+        self.assertTrue(old.cancelled());self.assertNotIn('route_key',sample['native']['navigation'])
+        self.assertEqual(sample['position'],position);self.assertNotIn('regional_navigation',sample)
+        navigator.update(sample,geo(6500,9000));self.assertIsNotNone(navigator.task)
+        self.assertEqual(sample['navigation_failsafe']['attempts'],1)
+        self.assertEqual(navigator.recover_wait(sample)['extent_m'],20000.)
+        self.assertEqual(navigator.recover_wait(sample)['extent_m'],40000.)
+        await navigator.close()
+
+    async def test_exhausted_coast_accepts_checked_replacement_water_route(self):
+        async def rpc(*args,**kwargs):await asyncio.Event().wait()
+        class Near:
+            def nearest(self,position):return 800.,geo(0,0)
+        key=[0,0,1];end=geo(800,3000);new=geo(1000,5000)
+        sample=dict(lap=0,leg=0,waypoint=1,position=end,native={},
+            regional_navigation=dict(points=[end],index=1,mode='coastal',route_key=key,
+                policy=REGIONAL_POLICY,job='old',probe_position=geo(800,0)))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=key
+        async def ready():return dict(points=[new],index=0,mode='detour',route_key=key,
+            policy=REGIONAL_POLICY,job='checked-water',probe_position=end)
+        navigator.task=asyncio.create_task(ready());await navigator.task
+        self.assertEqual(navigator.update(sample,geo(6500,9000)),new)
+        self.assertEqual(sample['regional_navigation']['job'],'checked-water')
+        self.assertNotIn('regional_waiting',sample)
+        await navigator.close()
+
     async def asyncSetUp(self):
         from unittest.mock import patch
         import shapely
@@ -192,6 +307,75 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         fixture=LandGuard(shapely.GeometryCollection(),shapely.box(-100000,-100000,100000,100000))
         mock=patch('posim_routing.land.guard_from_spec',return_value=fixture)
         mock.start();self.addCleanup(mock.stop)
+
+    async def test_checked_coastal_onward_goal_preserves_port_and_shape_index(self):
+        from unittest.mock import patch
+        async def rpc(path,body=None,timeout=10):
+            if path.endswith('/terrain.json'):return grid()
+            return dict(id='fixture',status='ready',spec=SPEC,manifest=dict(source='fixture'))
+        sample=dict(lap=0,leg=0,waypoint=1,position=geo(800,-4000))
+        vertex,onward,port=geo(30000,0),geo(800,9000),geo(-8000,50000)
+        navigator=RegionalNavigator(rpc,coastal=True)
+        with patch('posim_routing.coastal.coastal_corridor',return_value=dict(points=[geo(800,5000)],index=0,mode='coastal')) as checked:
+            plan=await navigator.prepare(sample,vertex,[0,0,1],(1000.,geo(0,0)),False,
+                                         progress_target=port,coastal_target=onward)
+        self.assertEqual(checked.call_args.args[3],onward)
+        self.assertEqual(checked.call_args.kwargs['progress_target'],port)
+        self.assertEqual(plan['coastal_course_target'],onward)
+        self.assertEqual(sample['waypoint'],1)
+        await navigator.close()
+
+    async def test_nearby_coast_stays_a_coastal_region_without_a_forward_sample(self):
+        # After a fixed departure, the coarse target points offshore. Coast
+        # discovery must still enable rounding before seeking its next shore.
+        class Near:
+            def nearest(self, position):return 12000., geo(0, 0)
+            def progressive_shore(self, position, target):return None
+        navigator=RegionalNavigator(lambda *args: None, coastal=True)
+        navigator.coast_index=Near();position=geo(8000, 0)
+        navigator.probed=position;sample=dict(lap=0,leg=0,waypoint=1,position=position,native={})
+        self.assertEqual(navigator.update(sample,geo(30000,0)),geo(30000,0))
+        self.assertEqual(sample['coastal_navigation']['status'],'coastal_region')
+        self.assertIsNone(navigator.task)
+        await navigator.close()
+
+    async def test_checked_water_fallback_does_not_suppress_shore_approach(self):
+        from unittest.mock import patch
+        async def rpc(path,body=None,timeout=10):
+            if path.endswith('/terrain.json'):return grid()
+            return dict(id='fixture',status='ready',spec=SPEC,manifest=dict(source='fixture'))
+        position=geo(5000,-4000);target=geo(6500,9000);near=(10000.,geo(0,5000))
+        water=dict(points=[geo(6500,5000)],index=0,mode='detour')
+        endpoint=geo(1000,3000);checked=dict(points=[endpoint],index=0)
+        navigator=RegionalNavigator(rpc,coastal=True)
+        with patch('posim_routing.coastal.coastal_corridor',return_value=water), \
+             patch('posim_routing.coastal.coastal_approach',return_value=endpoint), \
+             patch('posim_routing.regional.corridor',return_value=checked) as approach:
+            value=await navigator.prepare(dict(position=position),target,[0,0,1],near,False)
+        approach.assert_called_once()
+        self.assertEqual(value['mode'],'coastal_approach')
+        self.assertEqual(value['points'],[endpoint])
+        self.assertGreater(distance(position,near[1])-distance(endpoint,near[1]),500.)
+        await navigator.close()
+
+    async def test_nonempty_optional_water_fallback_preserves_coastal_runway(self):
+        class Near:
+            def nearest(self,position):return 800.,geo(0,0)
+        async def rpc(*args,**kwargs):raise AssertionError('retry must be throttled')
+        key=[0,0,1];position=geo(800,3000);end=geo(800,4000)
+        sample=dict(lap=0,leg=0,waypoint=1,position=position,native={},
+            regional_navigation=dict(route_key=key,points=[end],index=0,mode='coastal',
+                policy=REGIONAL_POLICY,probe_position=geo(800,0),job='coastal'))
+        navigator=RegionalNavigator(rpc,coastal=True);navigator.coast_index=Near();navigator.key=key
+        async def fallback():return dict(route_key=key,points=[geo(6500,5000)],index=0,
+            mode='detour',policy=REGIONAL_POLICY,probe_position=position,job='offshore')
+        navigator.task=asyncio.create_task(fallback());await navigator.task
+        self.assertEqual(navigator.update(sample,geo(6500,9000)),end)
+        self.assertEqual(sample['regional_navigation']['job'],'coastal')
+        sample['position']=end
+        self.assertEqual(navigator.update(sample,geo(6500,9000)),end)
+        self.assertEqual(sample['regional_waiting']['reason'],'coastal_renewal')
+        await navigator.close()
 
     async def test_destination_port_survives_a_local_waypoint_target(self):
         from unittest.mock import patch
@@ -207,6 +391,22 @@ class BackgroundPlanning(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coastal.call_args.kwargs['progress_target'],port)
         self.assertEqual(value['destination_progress_target'],port)
         self.assertEqual(value['mode'],'detour')
+        await navigator.close()
+
+    async def test_blocked_coarse_frontier_retries_finer_real_terrain(self):
+        from unittest.mock import patch,AsyncMock
+        state=dict(lap=0,leg=0,waypoint=1,position=geo(800,-4000))
+        async def rpc(path,body=None,timeout=10):
+            return grid()
+        navigator=RegionalNavigator(rpc)
+        navigator.terrain_region=AsyncMock(return_value=dict(id='fixture',spec=SPEC,manifest=dict(source='fixture')))
+        target=geo(800,9000)
+        with patch('posim_routing.coastal.coastal_corridor',return_value=None), \
+             patch('posim_routing.regional.corridor',side_effect=[RuntimeError('regional_corridor_unavailable'),dict(points=[geo(800,1000)],index=0)]):
+            plan=await navigator.prepare(state,target,[0,0,1],needed=True)
+        self.assertEqual([call.args[1] for call in navigator.terrain_region.call_args_list],[20000,6000])
+        self.assertEqual(plan['mode'],'detour')
+        self.assertEqual(plan['destination_progress_target'],target)
         await navigator.close()
 
     async def test_old_coastal_policy_is_replanned_without_moving_the_vehicle(self):

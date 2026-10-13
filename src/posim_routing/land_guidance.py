@@ -23,7 +23,7 @@ def horizon_target(guard, start, target, horizon=50000., radius=40.):
     raise RuntimeError('mapped_guidance_horizon_blocked')
 
 
-def detour(guard, start, target, step=150., radius=40., timeout=12.):
+def detour(guard, start, target, step=150., radius=40., timeout=12., maximum_extent=128000.):
     """Return a complete mapped-water route, including necessary initial retreat.
 
     This exclusion search neither creates water nor approves bathymetry. Its
@@ -35,7 +35,7 @@ def detour(guard, start, target, step=150., radius=40., timeout=12.):
     if guard.segment(start,target,radius):return [list(target)]
     pad=24000.
     lo=np.minimum(start,target)-pad;hi=np.maximum(start,target)+pad
-    if np.max(hi-lo)>128000.:
+    if np.max(hi-lo)>maximum_extent:
         raise RuntimeError('mapped_guidance_horizon_exceeded')
     xs=np.arange(lo[0],hi[0]+step/2,step);ys=np.arange(lo[1],hi[1]+step/2,step)
     safe=guard.grid(xs,ys,radius+step/math.sqrt(2))

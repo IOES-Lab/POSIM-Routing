@@ -9,7 +9,7 @@ from pyproj import Geod
 GEO = Geod(ellps='WGS84')
 
 
-def passed_vertex(previous, vertex, following, position, maximum_offset=80000., minimum_leg=2000., corner_margin=2000., adjacent_limit=True):
+def passed_vertex(previous, vertex, following, position, maximum_offset=80000., minimum_leg=2000., corner_margin=2000., adjacent_limit=True, require_incoming=True):
     incoming_back, _, incoming = GEO.inv(*vertex, *previous)
     outgoing_bearing, _, outgoing = GEO.inv(*vertex, *following)
     bearing, _, separation = GEO.inv(*vertex, *position)
@@ -25,17 +25,31 @@ def passed_vertex(previous, vertex, following, position, maximum_offset=80000., 
         return False
     along_in = separation*math.cos(math.radians(bearing-incoming_bearing))
     along_out = separation*math.cos(math.radians(bearing-outgoing_bearing))
-    return along_in >= 0 and along_out >= -min(corner_margin, min(incoming, outgoing)*.1)
+    return (not require_incoming or along_in >= 0) and along_out >= -min(corner_margin, min(incoming, outgoing)*.1)
+
+
+def rounded_course(leg, index, state):
+    """Retain an accepted onward goal for this exact course vertex."""
+    prior=state.get('course_lookahead') or {}
+    return (0<index<len(leg['coordinates'])-1 and prior.get('rounded_shape') is True
+            and prior.get('route_key')==[state['lap'],state['leg'],index]
+            and prior.get('target')==leg['coordinates'][index+1])
 
 
 def coastal_shape(leg, index, state):
+    from .port_waypoints import mandatory
+    if mandatory(leg,index):return False
+    # Preserve the initial harbour exit before taking coastal lookahead.
+    stay=state.get('last_stopover') or {}
+    departing=(state.get('phase')=='departure' or (stay.get('departed_at') and (stay.get('port') or {}).get('id')==leg.get('origin')))
+    if departing and GEO.inv(*state['position'],*leg['coordinates'][0])[2]<5000.:return False
     points = leg['coordinates']
     if not 0 < index < len(points)-1 or leg.get('canal'):
         return False
     plan = state.get('regional_navigation') or {}
-    regional=(plan.get('mode') in ('coastal', 'coastal_approach')
+    regional=(plan.get('mode') in ('coastal', 'coastal_transfer', 'coastal_approach')
               and plan.get('route_key') == [state['lap'], state['leg'], index])
-    if not regional and (state.get('coastal_navigation') or {}).get('status') != 'coastal_region':
+    if not regional and not rounded_course(leg,index,state) and (state.get('coastal_navigation') or {}).get('status') != 'coastal_region':
         return False
     # Keep mapped canal samples and explicit southern-ocean gates mandatory.
     from posim_terrain.canal_override import in_region
@@ -48,8 +62,21 @@ def coastal_shape(leg, index, state):
 
 def passed_coastal_shape(leg, index, state):
     points=leg['coordinates']
+    # Once a checked coastal path rounds the vertex, moving farther from the
+    # offshore graph point must not make that same point mandatory again.
+    # Passage still requires measured progress through both adjoining planes.
+    horizon=max(80000.,GEO.inv(*points[index],*points[index+1])[2]) if rounded_course(leg,index,state) else 80000.
+    departure=leg.get('fixed_departure') or {}
+    from .port_waypoints import POLICY
+    first_onward=(departure.get('policy')==POLICY and departure.get('verified') is True
+                  and index==departure.get('last_waypoint',-2)+1)
+    # The first coarse vertex after a fixed harbour exit can lie far offshore.
+    # Its incoming plane would require travelling out to that vertex. Once a
+    # checked coastal rounding is accepted, measured onward passage suffices.
+    require_incoming=not (first_onward and rounded_course(leg,index,state))
     return coastal_shape(leg,index,state) and passed_vertex(
-        points[index-1],points[index],points[index+1],state['position'],adjacent_limit=False)
+        points[index-1],points[index],points[index+1],state['position'],maximum_offset=horizon,
+        adjacent_limit=False,require_incoming=require_incoming)
 
 
 def course_target(leg,index,state):
@@ -59,7 +86,11 @@ def course_target(leg,index,state):
     incoming_back,_,incoming=GEO.inv(*vertex,*points[index-1])
     bearing,_,outgoing=GEO.inv(*vertex,*points[index+1])
     if min(incoming,outgoing)<2000 or math.cos(math.radians(bearing-incoming_back-180.))<-.25:return vertex
-    if GEO.inv(*state['position'],*vertex)[2]>80000.:return vertex
+    regional=state.get('regional_navigation') or {}
+    checked_onward=(regional.get('mode') in ('coastal','coastal_transfer','coastal_approach')
+                    and regional.get('route_key')==[state['lap'],state['leg'],index]
+                    and regional.get('coastal_course_target')==points[index+1])
+    if not rounded_course(leg,index,state) and not checked_onward and GEO.inv(*state['position'],*vertex)[2]>80000.:return vertex
     # Coastal travel can pass well inside an offshore graph bend. A short
     # offset from that bend still pulls the vessel out to sea. Plan towards
     # the onward vertex; measured passage advances the shape index separately.

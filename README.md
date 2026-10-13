@@ -63,21 +63,26 @@ checked segment. Longitude wrapping supports the international date line.
 
 Coastal lookahead favours shore only while progressing toward the destination
 port. Its final stretch must approach both the course target and the port.
-The full coastal route may add at most 30% to a shorter checked route to the
+The full coastal route may add at most 100% to a shorter checked route to the
 same onward target. Longer scenic detours use the ordinary water route instead.
 Land and shallow water can still require a detour around bays or islands.
 Ports and required passage points retain their arrival checks.
 
 Onward waypoints mark checked segment ends. Straight grid runs are shortened
-when the complete swept corridor passes depth and mapped-land checks. The
-shortened route preserves its checked exit.
+when the complete swept corridor passes depth and mapped-land checks. After joining the coast, consumed segments stay within 1.5 km of land.
+Disconnected coastal bands use a complete checked water transfer. The shore-distance bound applies to the next shore after joining it.
+Offshore exits remain checked evidence and require a separate route before movement.
+Ordinary offshore graph bends can use a checked onward coastal goal while measured passage advances their shape index. Port and passage waypoints stay mandatory.
+A forward shore approach is checked before selecting an ordinary water fallback.
+Optional renewals keep the current checked coastal runway until a coastal continuation is ready.
 
 | Policy | Default |
 |---|---|
 | Surface local depth clearance | 1.5 m |
 | Surface hull radius + tracking margin | 3.5 m + 4 m |
 | Coastal preferred distance | 250 m |
-| Maximum extra distance for coastal preference | 30% |
+| Maximum coastal-following distance from land | 1.5 km |
+| Maximum extra distance for coastal preference | 100% (2.0× total length) |
 | Coastal regional buffer / depth | 40 m / 2 m |
 | Arrival radius | 300 m |
 | Arrival target screening | 350 m buffer / 3 m depth |
