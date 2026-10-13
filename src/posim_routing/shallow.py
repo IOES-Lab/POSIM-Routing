@@ -40,7 +40,8 @@ def exit_corridor(terrain,spec,start,target,guard=None):
     if guard is not None:field=LandExcludedField(field,guard)
     origin=[*forward.transform(*start),0.];goal=np.array(forward.transform(*target))
     planner=DetourPlanner(field,origin,True,maximum_radius=2000,maximum_length=3000)
-    planner.radius=SHALLOW_BUFFER_M;planner.clearance=MINIMUM_DEPTH_M
+    planner.radius=SHALLOW_BUFFER_M+2*max(float(np.max(np.diff(raw.xs))),float(np.max(np.diff(raw.ys))))
+    planner.clearance=MINIMUM_DEPTH_M
     if planner.safe(origin[:2],0.):return None
     # Migration cannot teleport a vessel that was already within 200 m.
     # Its bounded outward segment must remain hull-safe and increase separation.
