@@ -20,10 +20,10 @@ from scipy.spatial import cKDTree
 
 GEO = Geod(ellps="WGS84")
 COAST_DISCOVERY_M = 80000.
-STANDOFF_M = 400.
+STANDOFF_M = 320.
 MAXIMUM_STANDOFF_M = 600.
 MINIMUM_DEPTH_M = 2.
-REGIONAL_BUFFER_M = 40.
+REGIONAL_BUFFER_M = 200.
 WAYPOINT_FORMAT = "checked-segment-ends-v5-coastal-transfer"
 MAXIMUM_COASTAL_DETOUR_RATIO = 2.0
 MAXIMUM_COASTAL_DISTANCE_M = 1500.
@@ -139,7 +139,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
     field = TerrainField(terrain["xs"], terrain["ys"], terrain["heights"])
     xs, ys, heights = field.xs, field.ys, field.heights
     finite = np.isfinite(heights)
-    land = finite & (heights >= 0)
+    land = finite & (heights > -MINIMUM_DEPTH_M)
     if guard is not None:
         land |= ~guard.grid(xs, ys)
     if not land.any():
@@ -423,6 +423,8 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
                     index=0, mode="coastal_transfer" if transfer_required else "coastal", planning_seconds=time.monotonic()-started,
                     search_nodes=expanded, minimum_regional_clearance_m=validator.minimum,
                     preferred_standoff_m=STANDOFF_M,
+                    shallow_water_buffer_m=REGIONAL_BUFFER_M,
+                    shallow_boundary_depth_m=MINIMUM_DEPTH_M,
                     endpoint_standoff_m=float(coast_distance[endpoint]),
                     maximum_preferred_standoff_m=MAXIMUM_STANDOFF_M,
                     progress_to_course_waypoint_m=float(progress[endpoint]),
