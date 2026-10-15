@@ -9,6 +9,10 @@ import math
 import time
 import numpy as np
 
+# Interpolating a flat two-metre floor can produce -1.9999999999999998.
+# Ignore arithmetic roundoff without changing the represented depth policy.
+DEPTH_EPSILON_M = 1e-9
+
 
 class TerrainField:
     def __init__(self, xs, ys, heights):
@@ -85,7 +89,7 @@ class DetourPlanner:
     def safe(self, xy, z, radius=None):
         if math.dist(xy,self.origin)>self.maximum_radius:return False
         floor=self.field.maximum(*xy,self.radius if radius is None else radius)
-        return floor is not None and floor<0 and z-floor>=self.clearance
+        return floor is not None and floor<0 and z-floor>=self.clearance-DEPTH_EPSILON_M
 
     def segment(self, a, b, record=False):
         distance=math.dist(a[:2],b[:2]);count=max(1,math.ceil(distance/1.))
@@ -97,7 +101,7 @@ class DetourPlanner:
             f=k/count;xy=[a[i]+(b[i]-a[i])*f for i in (0,1)]
             if math.dist(xy,self.origin)>self.maximum_radius:return False
             floor=self.field.maximum(*xy,radius)
-            if floor is None or floor>=0 or z-floor<self.clearance:return False
+            if floor is None or floor>=0 or z-floor<self.clearance-DEPTH_EPSILON_M:return False
             minimum=min(minimum,z-floor)
         if record:self.minimum=min(self.minimum,minimum)
         return True
