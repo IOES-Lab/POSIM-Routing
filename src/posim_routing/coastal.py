@@ -17,6 +17,7 @@ import numpy as np
 from pyproj import Geod
 from scipy.ndimage import distance_transform_edt, maximum_filter, label
 from scipy.spatial import cKDTree
+from .navigation import DEPTH_EPSILON_M
 
 GEO = Geod(ellps="WGS84")
 COAST_DISCOVERY_M = 80000.
@@ -139,7 +140,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
     field = TerrainField(terrain["xs"], terrain["ys"], terrain["heights"])
     xs, ys, heights = field.xs, field.ys, field.heights
     finite = np.isfinite(heights)
-    land = finite & (heights > -MINIMUM_DEPTH_M)
+    land = finite & (heights > -MINIMUM_DEPTH_M+DEPTH_EPSILON_M)
     if guard is not None:
         land |= ~guard.grid(xs, ys)
     if not land.any():
@@ -159,7 +160,7 @@ def coastal_corridor(terrain, spec, start, target, timeout=25., guard=None, prog
     size = (2*math.ceil(margin/dy)+1, 2*math.ceil(margin/dx)+1)
     bounds = maximum_filter(np.where(finite, heights, math.inf), size=size,
                             mode="constant", cval=math.inf)
-    safe = bounds <= -MINIMUM_DEPTH_M
+    safe = bounds <= -MINIMUM_DEPTH_M+DEPTH_EPSILON_M
     if guard is not None:
         safe &= guard.grid(xs, ys, margin)
     coast_distance = distance_transform_edt(~land, sampling=(dy, dx))

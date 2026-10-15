@@ -3,6 +3,7 @@ import math
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import RegularGridInterpolator
+from .navigation import DEPTH_EPSILON_M
 
 MINIMUM_DEPTH_M=2.
 SHALLOW_BUFFER_M=200.
@@ -10,7 +11,7 @@ SHALLOW_BUFFER_M=200.
 
 def clearance_field(field):
     dx,dy=float(np.max(np.diff(field.xs))),float(np.max(np.diff(field.ys)))
-    shallow=~np.isfinite(field.heights) | (field.heights > -MINIMUM_DEPTH_M)
+    shallow=~np.isfinite(field.heights) | (field.heights > -MINIMUM_DEPTH_M+DEPTH_EPSILON_M)
     distances=distance_transform_edt(~shallow,sampling=(dy,dx))
     return RegularGridInterpolator((field.ys,field.xs),distances,
                                   bounds_error=False,fill_value=0.)

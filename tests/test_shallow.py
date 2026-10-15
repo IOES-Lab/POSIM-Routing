@@ -14,6 +14,22 @@ def terrain():
     return dict(xs=axis.tolist(),ys=axis.tolist(),heights=np.where(x<0,-1.,-15.).tolist())
 
 class ShallowExit(unittest.TestCase):
+    def test_roundoff_on_exact_depth_plateau_does_not_create_a_shoal(self):
+        axis=np.linspace(-1000,1000,41)
+        for floor,expected in ((np.nextafter(-2.,0.),True),(-2.+1e-6,False)):
+            raw=TerrainField(axis,axis,np.full((41,41),floor))
+            planner=DetourPlanner(CachedTerrain(raw),[0,0,0],True)
+            planner.radius=200.;planner.clearance=2.
+            self.assertEqual(planner.safe([0,0],0.),expected)
+            self.assertEqual(planner.segment([0,0,0],[100,100,0]),expected)
+            clearance=clearance_field(raw)
+            self.assertEqual(float(clearance([[0,0]])[0])>0,expected)
+    def test_roundoff_tolerance_does_not_accept_unknown_depth(self):
+        axis=np.linspace(-1000,1000,41);heights=np.full((41,41),-2.)
+        heights[20,20]=np.nan
+        planner=DetourPlanner(CachedTerrain(TerrainField(axis,axis,heights)),[0,0,0],True)
+        planner.radius=200.;planner.clearance=2.
+        self.assertFalse(planner.safe([0,0],0.))
     def test_already_clear_position_needs_no_departure(self):
         self.assertIsNone(exit_corridor(terrain(),SPEC,geo(400,0),geo(1000,2000)))
     def test_inside_buffer_exits_under_propulsion_with_increasing_separation(self):
