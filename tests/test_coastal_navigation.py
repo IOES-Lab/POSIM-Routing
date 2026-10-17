@@ -85,6 +85,26 @@ class CoastalPlanning(unittest.TestCase):
         self.assertLessEqual(plan['coastal_through_length_m']/plan['shortest_checked_length_m'], 2.)
         self.assert_coastal_band(grid(), start, plan)
 
+    def test_clear_coastal_run_does_not_keep_grid_staircases(self):
+        for amplitude, period in ((0., 1000.), (500., 2000.)):
+            with self.subTest(shore_amplitude=amplitude):
+                terrain = grid()
+                x, y = np.meshgrid(terrain['xs'], terrain['ys'])
+                terrain['heights'] = np.where(
+                    x <= amplitude*np.sin(y/period*2*np.pi), 20., -15.).tolist()
+                start = geo(1200, -4000)
+                plan = coastal_corridor(terrain, SPEC, start, geo(1200, 9000))
+                self.assertEqual(plan['mode'], 'coastal')
+                through = plan['points'] + plan['onward_points']
+                # A clear run needs bounded segment ends, not one turn per
+                # ten grid cells or every small shoreline indentation.
+                self.assertLessEqual(len(through), 4)
+                self.assertLess(plan['coastal_through_length_m'], 14500.)
+                self.assertTrue(all(distance(a, b) <= 7501.
+                                    for a, b in zip([start]+through[:-1], through)))
+                self.assert_coastal_band(terrain, start, plan)
+                self.assert_swept_safe(terrain, start, dict(points=through))
+
     def test_safe_backward_frontier_is_rejected(self):
         axis=np.linspace(-10000,10000,257)
         x,y=np.meshgrid(axis,axis)
@@ -195,13 +215,32 @@ class CoastalPlanning(unittest.TestCase):
         heights[:, (x > 0) & (x < 1700)] = -1.
         terrain['heights'] = heights.tolist()
         plan=coastal_corridor(terrain, SPEC, geo(3000,-4000),geo(6500,9000))
-        self.assertIsNotNone(plan)
-        self.assertEqual(plan['shallow_water_buffer_m'],200.)
-        self.assert_swept_safe(terrain,geo(3000,-4000),plan)
-        self.assertGreater(FORWARD.transform(*plan['points'][-1])[0],1900.)
+        # The bank blocks the coastal band around real land; use checked open water.
+        self.assertIsNone(plan)
+        water = corridor(terrain, SPEC, geo(3000,-4000),geo(6500,9000))
+        self.assert_swept_safe(terrain,geo(3000,-4000),water)
+        self.assertGreater(FORWARD.transform(*water['points'][-1])[0],1900.)
         heights[:, (x > 0) & (x < 1700)] = np.nan
         terrain['heights'] = heights.tolist()
         self.assertIsNone(coastal_corridor(terrain, SPEC, geo(3000, -4000), geo(6500, 9000)))
+
+    def test_submerged_banks_do_not_attract_coastal_waypoints(self):
+        for actual_land in (False, True):
+            with self.subTest(actual_land=actual_land):
+                terrain = grid()
+                x, y = np.meshgrid(terrain['xs'], terrain['ys'])
+                heights = np.where(x <= 0, -1., -15.)
+                if actual_land:
+                    heights[x <= -6000] = 20.
+                terrain['heights'] = heights.tolist()
+                # The safe side of this bank is open water, kilometres from
+                # real land. It must not become a scenic coastline to follow.
+                self.assertIsNone(coastal_corridor(
+                    terrain, SPEC, geo(800, -4000), geo(800, 9000)))
+                water = corridor(terrain, SPEC, geo(800, -4000), geo(800, 9000))
+                self.assertEqual(len(water['points']), 1)
+                end_x, _ = FORWARD.transform(*water['points'][0])
+                self.assertLess(abs(end_x-800.), 1.)
 
     def test_two_point_five_metre_coast_is_available_to_wamv(self):
         terrain=grid();heights=np.array(terrain['heights'])
