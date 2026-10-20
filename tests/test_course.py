@@ -11,6 +11,23 @@ def state(position):
                 coastal_navigation=dict(status='coastal_region'))
 
 class CourseTests(unittest.TestCase):
+    def test_phuket_reached_onward_entry_completes_offshore_shape(self):
+        leg=dict(coordinates=[[100.6,3.2],[97.,7.],
+                              [98.28911746469352,7.770512146756515],
+                              [98.28994670668614,7.769520412763569]],canal=False,
+                 fixed_approach=dict(policy='fixed-port-waypoints-v1',verified=True,first_waypoint=2))
+        sample=state([98.28908548827172,7.770543662774121])
+        sample['course_lookahead']=dict(route_key=[0,2,1],target=leg['coordinates'][2],rounded_shape=True)
+        sample['native']=dict(navigation=dict(route_key=[0,2,1],mapped_land_checked=True))
+        sample['coastal_depth_corridor']=dict(accepted=True)
+        self.assertTrue(passed_coastal_shape(leg,1,sample))
+        self.assertFalse(passed_coastal_shape(leg,2,sample),'The harbour entry is still mandatory')
+        for field in ('course_lookahead','native','coastal_depth_corridor'):
+            missing=copy.deepcopy(sample);missing.pop(field)
+            self.assertFalse(passed_coastal_shape(leg,1,missing))
+        sample['native']['navigation']['route_key']=[0,1,1]
+        self.assertFalse(passed_coastal_shape(leg,1,sample))
+
     def test_distant_offshore_shape_rounds_only_with_checked_matching_onward_goal(self):
         leg=dict(coordinates=[[109.,16.1],[110.1,12.2],[107.3207,7.6091]],canal=False)
         sample=state([109.2413,14.4598])
