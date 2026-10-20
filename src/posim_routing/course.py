@@ -62,6 +62,19 @@ def coastal_shape(leg, index, state):
 
 def passed_coastal_shape(leg, index, state):
     points=leg['coordinates']
+    if not coastal_shape(leg,index,state):
+        return False
+    navigation=(state.get('native') or {}).get('navigation') or {}
+    # A coastal rounding can reach the following harbour entry without ever
+    # crossing the incoming plane of the offshore graph vertex. The measured
+    # arrival at its checked onward goal completes that shape vertex only;
+    # the following mandatory harbour waypoint retains its own strict radius.
+    if (rounded_course(leg,index,state)
+            and navigation.get('route_key')==[state['lap'],state['leg'],index]
+            and navigation.get('mapped_land_checked') is True
+            and (state.get('coastal_depth_corridor') or {}).get('accepted') is True
+            and GEO.inv(*state['position'],*points[index+1])[2]<=50.):
+        return True
     # Once a checked coastal path rounds the vertex, moving farther from the
     # offshore graph point must not make that same point mandatory again.
     # Passage still requires measured progress through both adjoining planes.
@@ -74,7 +87,7 @@ def passed_coastal_shape(leg, index, state):
     # Its incoming plane would require travelling out to that vertex. Once a
     # checked coastal rounding is accepted, measured onward passage suffices.
     require_incoming=not (first_onward and rounded_course(leg,index,state))
-    return coastal_shape(leg,index,state) and passed_vertex(
+    return passed_vertex(
         points[index-1],points[index],points[index+1],state['position'],maximum_offset=horizon,
         adjacent_limit=False,require_incoming=require_incoming)
 
