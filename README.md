@@ -2,6 +2,8 @@
 
 [한국어](README.ko.md)
 
+> This project is developed with assistance from large language models (LLMs).
+
 Plan global maritime routes, coastal corridors and port approaches. A global graph supplies the itinerary. Numeric terrain checks depth, and mapped land excludes shore crossings. WWW-POSIM connects these planners to its terrain workers and voyage coordinator.
 
 ## Install
