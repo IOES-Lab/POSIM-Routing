@@ -10,10 +10,9 @@ import heapq
 import json
 import math
 import time
-import tempfile
-import shutil
-import zipfile
 from pathlib import Path
+
+from .coast_dataset import coast_dataset
 
 import numpy as np
 import pyogrio
@@ -33,19 +32,11 @@ def length(points):
 class CoastConnector:
     def __init__(self, archive, step=250., margin=80., timeout=10.):
         self.archive, self.step, self.margin, self.timeout = archive, step, margin, timeout
-        self._cache = tempfile.TemporaryDirectory(prefix='www-posim-coast-')
-        with zipfile.ZipFile(archive) as source:
-            self.member = next(name for name in source.namelist() if name.endswith('.shp'))
-            stem = self.member[:-4]
-            # Extract once: repeated random reads inside this large compressed
-            # shapefile otherwise inflate the archive for every connection.
-            for suffix in ('.shp', '.shx', '.dbf', '.prj', '.cpg', '.qix'):
-                member = stem+suffix
-                if member not in source.namelist():continue
-                destination = Path(self._cache.name)/Path(member).name
-                with source.open(member) as incoming, destination.open('wb') as outgoing:
-                    shutil.copyfileobj(incoming, outgoing)
-        self.dataset = Path(self._cache.name)/Path(self.member).name
+        source = Path(archive).resolve()
+        stat = source.stat()
+        self._cache = coast_dataset(str(source), (stat.st_size, stat.st_mtime_ns))
+        self.member = self._cache.member
+        self.dataset = self._cache.dataset
 
     def route(self, start, end):
         if abs(start[0]-end[0]) > 180:

@@ -2,7 +2,6 @@
 import json
 import math
 import os
-import zipfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -77,16 +76,19 @@ def geographic_windows(inverse,half):
 @lru_cache(maxsize=12)
 def _load(encoded, archive, signature, extent):
     import pyogrio.raw
+    from .coast_dataset import coast_dataset
     from posim_terrain.terrain import projection
     spec = json.loads(encoded)
     _, forward, inverse = projection(spec)
     half = max(spec['width_m'], spec['height_m'])/2 + 500 if extent is None else extent
     windows=geographic_windows(inverse,half)
-    with zipfile.ZipFile(archive) as source:
-        member = next(name for name in source.namelist() if name.endswith('.shp'))
+    # Keep the owner alive through all GDAL reads even if another request
+    # replaces or evicts this source from the bounded shared cache.
+    source = coast_dataset(archive, signature)
+    dataset = source.dataset
     parts=[]
     for bounds in windows:
-        metadata,_,geometries,_=pyogrio.raw.read('/vsizip/'+archive+'/'+member,
+        metadata,_,geometries,_=pyogrio.raw.read(str(dataset),
                                                bbox=bounds,columns=[])
         if metadata['crs']!='EPSG:4326':
             raise RuntimeError('land_exclusion_projection_mismatch')
